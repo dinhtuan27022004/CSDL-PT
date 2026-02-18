@@ -21,6 +21,9 @@ class ImageResponse(BaseModel):
     edge_density: Optional[float] = None
     dominant_color_hex: Optional[str] = None
     features_json: Optional[dict] = None
+    texture_json: Optional[dict] = None
+    shape_json: Optional[dict] = None
+    embedding_json: Optional[List[float]] = None
     similarity: Optional[float] = None
     created_at: datetime
     

@@ -25,6 +25,9 @@ class ImageMetadata(Base):
     edge_density = Column(Float)
     dominant_color_hex = Column(String(7))
     features_json = Column(Text)
+    texture_json = Column(Text)
+    shape_json = Column(Text)
+    embedding_json = Column(Text)  # Storing as JSON string
     created_at = Column(DateTime, default=datetime.utcnow)
     
     def __repr__(self):

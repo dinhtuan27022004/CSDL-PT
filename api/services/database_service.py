@@ -39,6 +39,8 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Error creating tables: {e}")
             raise
+
+
     
     def get_session(self) -> Session:
         """Get a new database session"""
@@ -63,7 +65,10 @@ class DatabaseService:
                 saturation=features.get('saturation'),
                 edge_density=features.get('edge_density'),
                 dominant_color_hex=features.get('dominant_color_hex'),
-                features_json=features.get('features_json')
+                features_json=features.get('features_json'),
+                texture_json=features.get('texture_json'),
+                shape_json=features.get('shape_json'),
+                embedding_json=features.get('embedding_json') if isinstance(features.get('embedding_json'), str) else str(features.get('embedding_json')) # Ensure string if list
             )
             
             db.add(image_record)
@@ -101,6 +106,13 @@ class DatabaseService:
             image.edge_density = features.get('edge_density')
             image.dominant_color_hex = features.get('dominant_color_hex')
             image.features_json = features.get('features_json')
+            image.texture_json = features.get('texture_json')
+            image.shape_json = features.get('shape_json')
+            
+            # Handle embedding_json list->str conversion if needed
+            emb = features.get('embedding_json')
+            if emb is not None:
+                image.embedding_json = emb if isinstance(emb, str) else str(emb)
             
             db.commit()
             db.refresh(image)

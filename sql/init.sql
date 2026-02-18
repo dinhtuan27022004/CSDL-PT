@@ -21,7 +21,14 @@ CREATE TABLE image_metadata (
     
     -- Dữ liệu đặc trưng nâng cao (Lưu dạng JSONB để tối ưu truy vấn)
     -- Bao gồm: Histogram, Color moments, GLCM, Gabor, Contour data
-    features_json JSONB,
+    features_json TEXT,
+    
+    -- New Advanced Features
+    texture_json TEXT,  -- LBP, GLCM
+    shape_json TEXT,    -- Hu Moments
+    embedding_json TEXT, -- ResNet18 Vector
+
+    unique_filename VARCHAR(255) UNIQUE, 
     
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
