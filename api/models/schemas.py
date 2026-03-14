@@ -26,3 +26,8 @@ class ImageResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+class SearchResponse(BaseModel):
+    """Search response schema including query image features"""
+    query_image: dict
+    results: list[ImageResponse]

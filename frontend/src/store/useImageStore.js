@@ -20,6 +20,8 @@ const useImageStore = create((set, get) => ({
 
     // Similarity state
     similarityResults: [],
+    queryImageFeatures: null,
+    queryImagePreviewUrl: null,
     similarityLoading: false,
     similarityError: null,
     topK: parseInt(import.meta.env.VITE_DEFAULT_TOPK) || 5,
@@ -90,7 +92,8 @@ const useImageStore = create((set, get) => ({
      * Find similar images
      */
     searchImages: async (file, limit = 5) => {
-        set({ similarityLoading: true, similarityError: null, similarityResults: [] });
+        const previewUrl = URL.createObjectURL(file);
+        set({ similarityLoading: true, similarityError: null, similarityResults: [], queryImageFeatures: null, queryImagePreviewUrl: previewUrl });
 
         try {
             const formData = new FormData();
@@ -108,14 +111,18 @@ const useImageStore = create((set, get) => ({
                 throw new Error(`Search failed: ${response.statusText}`);
             }
 
-            const results = await response.json();
+            const data = await response.json();
 
-            const resultsWithPreviews = results.map(item => ({
+            const resultsWithPreviews = data.results.map(item => ({
                 ...item,
                 previewUrl: item.url ? `${API_BASE_URL}${item.url}` : null,
             }));
 
-            set({ similarityResults: resultsWithPreviews, similarityLoading: false });
+            set({ 
+                similarityResults: resultsWithPreviews, 
+                queryImageFeatures: data.query_image,
+                similarityLoading: false 
+            });
             return resultsWithPreviews;
 
         } catch (error) {

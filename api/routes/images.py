@@ -9,7 +9,7 @@ from typing import List
 import logging
 import json
 
-from ..models.schemas import ImageResponse
+from ..models.schemas import ImageResponse, SearchResponse
 from ..services import DatabaseService, ImageProcessor
 from ..utils.dependencies import get_db, get_database_service, get_image_processor
 from ..config import get_settings
@@ -198,7 +198,7 @@ async def recompute_all_features(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/search", response_model=List[ImageResponse])
+@router.post("/search", response_model=SearchResponse)
 async def search_similar_images(
     file: UploadFile = File(...),
     limit: int = 5,
@@ -225,24 +225,44 @@ async def search_similar_images(
             # 3. Extract Features
             query_features = image_processor.extract_features(file_path)
             
-            # 4. Compare with Database Images
-            # In a real production system, we'd use a vector DB (pgvector)
-            # For now, we fetch all feature vectors and compare in Python
-            all_images = db_service.get_images(db, limit=10000) # Fetch all metadata
+            # 4. Two-Stage Search Strategy
+            # Stage 1: Filter candidates using pgvector and DINOv2 embeddings
+            # We filter directly in the database for cosine_similarity (1 - distance) > 0.3
+            query_vector = query_features.get('dinov2_vector')
+            if not query_vector:
+                raise ValueError("Failed to extract DINOv2 vector from query image")
+                
+            filtered_candidates = db_service.search_images_by_vector(
+                db=db, 
+                query_vector=query_vector, 
+                threshold=0.3, # User specified threshold
+                limit=1000 # Fetch enough for stage 2 reranking
+            )
             
+            # Stage 2: Compute Hybrid Similarity Score
+            # Weighting: 50% DINOv2 Vector Similarity (from DB), 50% Traditional Features
             scored_images = []
-            for img in all_images:
-                # Prepare candidate features dict
+            for img, vector_sim in filtered_candidates:
+                # Prepare candidate features dict for traditional computation
                 candidate_features = {
                     'features_json': _parse_features_json(img.features_json)
                 }
                 
-                # Compute similarity
-                similarity = image_processor.compute_similarity(query_features, candidate_features)
+                # Compute traditional similarity (0 to 100)
+                traditional_similarity = image_processor.compute_similarity(query_features, candidate_features)
+                
+                # Combine scores
+                # vector_sim is 0.0 to 1.0. We scale it to 0-100 to match traditional
+                vector_similarity_percent = float(vector_sim) * 100.0
+                
+                # 50/50 Weighting
+                final_similarity = (vector_similarity_percent * 0.5) + (traditional_similarity * 0.5)
                 
                 scored_images.append({
                     'image': img,
-                    'similarity': similarity
+                    'similarity': final_similarity,
+                    'vector_similarity': float(vector_sim), # Keep original for debug/info if needed
+                    'traditional_similarity': traditional_similarity
                 })
             
             # 5. Sort and Limit
@@ -268,8 +288,13 @@ async def search_similar_images(
                     similarity=item['similarity'],
                     created_at=img.created_at
                 ))
-            
-            return response
+            if 'features_json' in query_features:
+                query_features['features_json'] = _parse_features_json(query_features['features_json'])
+                
+            return SearchResponse(
+                query_image=query_features,
+                results=response
+            )
 
         finally:
             # Cleanup temp file? 

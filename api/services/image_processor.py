@@ -11,6 +11,9 @@ import uuid
 import logging
 import json
 from typing import Dict
+from PIL import Image
+import torch
+from transformers import AutoImageProcessor, AutoModel
 
 from ..config import get_settings
 
@@ -23,6 +26,18 @@ class ImageProcessor:
     def __init__(self):
         """Initialize image processor"""
         self.settings = get_settings()
+        
+        # Load DINOv2 model and processor
+        logger.info("Loading DINOv2 model for feature extraction...")
+        # Using the small version which provides 384d vectors and is fast
+        self.dino_processor = AutoImageProcessor.from_pretrained('facebook/dinov2-small')
+        self.dino_model = AutoModel.from_pretrained('facebook/dinov2-small')
+        
+        # Use GPU if available
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.dino_model.to(self.device)
+        self.dino_model.eval()
+        logger.info(f"DINOv2 loaded successfully on {self.device}")
     
     def save_upload(self, content: bytes, original_filename: str) -> tuple[Path, str]:
 
@@ -78,6 +93,23 @@ class ImageProcessor:
             # Histogram for features_json
             features_json = self._extract_histogram_features(img, edge_density, contrast)
             
+            # --- DINOv2 Feature Extraction ---
+            # Convert OpenCV BGR image to PIL RGB image for Transformers
+            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(rgb_img)
+            
+            # Prepare inputs and run model
+            inputs = self.dino_processor(images=pil_img, return_tensors="pt").to(self.device)
+            with torch.no_grad():
+                outputs = self.dino_model(**inputs)
+            
+            # We take the [CLS] token representation (the first token) as the global image feature
+            hidden_states = outputs.last_hidden_state
+            vector = hidden_states[0, 0, :].cpu().numpy()
+            
+            # Normalize vector to unit length (L2 norm = 1) for cosine similarity
+            vector = vector / np.linalg.norm(vector)
+            
             return {
                 'width': width,
                 'height': height,
@@ -86,7 +118,8 @@ class ImageProcessor:
                 'saturation': saturation,
                 'edge_density': edge_density,
                 'dominant_color_hex': dominant_hex,
-                'features_json': json.dumps(features_json)
+                'features_json': json.dumps(features_json),
+                'dinov2_vector': vector.tolist()
             }
             
         except Exception as e:

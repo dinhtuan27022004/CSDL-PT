@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     
     # Database
     db_host: str = "localhost"
-    db_port: int = 5432
+    db_port: int = 5434
     db_name: str = "csdldpt"
     db_user: str = "postgres"
     db_password: str = "123123"

@@ -3,7 +3,7 @@ Database Service
 Manages database connections and operations
 """
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from typing import List, Optional
 import logging
@@ -34,6 +34,11 @@ class DatabaseService:
     def _ensure_tables(self):
         """Create tables if they don't exist"""
         try:
+            # First, ensure the vector extension exists
+            with self.engine.connect() as conn:
+                conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                conn.commit()
+    
             Base.metadata.create_all(bind=self.engine)
             logger.info("Database tables ensured")
         except Exception as e:
@@ -63,7 +68,8 @@ class DatabaseService:
                 saturation=features.get('saturation'),
                 edge_density=features.get('edge_density'),
                 dominant_color_hex=features.get('dominant_color_hex'),
-                features_json=features.get('features_json')
+                features_json=features.get('features_json'),
+                dinov2_vector=features.get('dinov2_vector')
             )
             
             db.add(image_record)
@@ -102,6 +108,9 @@ class DatabaseService:
             image.dominant_color_hex = features.get('dominant_color_hex')
             image.features_json = features.get('features_json')
             
+            if 'dinov2_vector' in features:
+                image.dinov2_vector = features.get('dinov2_vector')
+            
             db.commit()
             db.refresh(image)
             
@@ -131,6 +140,38 @@ class DatabaseService:
             
         except Exception as e:
             logger.error(f"Error fetching images: {e}")
+            raise
+    
+    def search_images_by_vector(
+        self,
+        db: Session,
+        query_vector: list[float],
+        threshold: float = 0.3,
+        limit: int = 100
+    ) -> List[tuple[ImageMetadata, float]]:
+        """
+        Search for similar images using pgvector.
+        Returns tuples of (ImageMetadata, vector_similarity)
+        where vector_similarity = 1 - cosine_distance.
+        """
+        try:
+            # We want similarity > threshold.
+            # Cosine distance in pgvector is operator <=>. Similarity = 1 - distance
+            # So distance < (1 - threshold)
+            
+            distance = ImageMetadata.dinov2_vector.cosine_distance(query_vector)
+            similarity_expr = 1.0 - distance
+            
+            results = db.query(ImageMetadata, similarity_expr.label('vector_sim'))\
+                .filter(similarity_expr > threshold)\
+                .order_by(distance)\
+                .limit(limit)\
+                .all()
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in vector search: {e}")
             raise
     
     def get_image_by_id(self, db: Session, image_id: int) -> Optional[ImageMetadata]:

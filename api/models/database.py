@@ -5,6 +5,7 @@ SQLAlchemy ORM models for image metadata
 
 from sqlalchemy import Column, Integer, String, Float, DateTime, Text
 from sqlalchemy.ext.declarative import declarative_base
+from pgvector.sqlalchemy import Vector
 from datetime import datetime
 
 Base = declarative_base()
@@ -25,6 +26,7 @@ class ImageMetadata(Base):
     edge_density = Column(Float)
     dominant_color_hex = Column(String(7))
     features_json = Column(Text)
+    dinov2_vector = Column(Vector(384))  # DINOv2 ViT-S/14 generates 384-dimensional embeddings
     created_at = Column(DateTime, default=datetime.utcnow)
     
     def __repr__(self):
