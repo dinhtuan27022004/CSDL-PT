@@ -115,7 +115,9 @@ const useImageStore = create((set, get) => ({
 
             const resultsWithPreviews = data.results.map(item => ({
                 ...item,
-                previewUrl: item.url ? `${API_BASE_URL}${item.url}` : null,
+                previewUrl: (item.url || item.file_path) ? `${API_BASE_URL}${item.url || item.file_path}` : null,
+                hogPreviewUrl: item.hog_vis_path ? `${API_BASE_URL}${item.hog_vis_path}` : null,
+                huPreviewUrl: item.hu_vis_path ? `${API_BASE_URL}${item.hu_vis_path}` : null,
             }));
 
             set({ 
@@ -161,7 +163,9 @@ const useImageStore = create((set, get) => ({
             // Add preview URLs
             const historyWithPreviews = history.map(item => ({
                 ...item,
-                previewUrl: item.url ? `${API_BASE_URL}${item.url}` : null,
+                previewUrl: (item.url || item.file_path) ? `${API_BASE_URL}${item.url || item.file_path}` : null,
+                hogPreviewUrl: item.hog_vis_path ? `${API_BASE_URL}${item.hog_vis_path}` : null,
+                huPreviewUrl: item.hu_vis_path ? `${API_BASE_URL}${item.hu_vis_path}` : null,
                 status: 'completed'
             }));
             console.log(historyWithPreviews);
@@ -304,7 +308,9 @@ const useImageStore = create((set, get) => ({
                 const withoutTemp = state.importHistory.filter(item => !item.id.toString().startsWith('temp_'));
                 const newResults = serverResults.map(result => ({
                     ...result,
-                    previewUrl: `${API_BASE_URL}${result.url}`,
+                    previewUrl: `${API_BASE_URL}${result.url || result.file_path}`,
+                    hogPreviewUrl: result.hog_vis_path ? `${API_BASE_URL}${result.hog_vis_path}` : null,
+                    huPreviewUrl: result.hu_vis_path ? `${API_BASE_URL}${result.hu_vis_path}` : null,
                     status: 'completed'
                 }));
 
@@ -364,7 +370,9 @@ const useImageStore = create((set, get) => ({
 
             const historyWithPreviews = updatedAndNewImages.map(item => ({
                 ...item,
-                previewUrl: item.url ? `${API_BASE_URL}${item.url}` : null,
+                previewUrl: (item.url || item.file_path) ? `${API_BASE_URL}${item.url || item.file_path}` : null,
+                hogPreviewUrl: item.hog_vis_path ? `${API_BASE_URL}${item.hog_vis_path}` : null,
+                huPreviewUrl: item.hu_vis_path ? `${API_BASE_URL}${item.hu_vis_path}` : null,
                 status: 'completed'
             }));
 

@@ -1,8 +1,3 @@
-"""
-Configuration Management
-Centralized settings using Pydantic BaseSettings
-"""
-
 from pydantic_settings import BaseSettings
 from pathlib import Path
 from typing import List
@@ -13,32 +8,33 @@ import os
 class Settings(BaseSettings):
     """Application configuration settings"""
     
-    # Database
-    db_host: str = "localhost"
-    db_port: int = 5434
-    db_name: str = "csdldpt"
-    db_user: str = "postgres"
-    db_password: str = "123123"
+    # Database (from .env)
+    db_host: str
+    db_port: int
+    db_name: str
+    db_user: str
+    db_password: str
     
-    # API
+    # API (from .env)
+    api_host: str
+    api_port: int
     api_title: str = "Image Similarity Search API"
-    api_description: str = "Upload images and search for similar ones"
-    api_version: str = "2.0.0"
-    api_host: str = "0.0.0.0"
-    api_port: int = 8000
+    api_description: str = "Upload images and search for similar ones (Modular Architecture)"
+    api_version: str = "2.1.0"
     
     # CORS
-    cors_origins: List[str] = ["http://localhost:5173", "http://localhost:3000"]
+    cors_origins: List[str] = ["http://localhost:5173"]
     
     # Paths
-    base_dir: Path = Path(__file__).parent.parent
+    base_dir: Path = Path(__file__).parent.parent.parent
     uploads_dir: Path = base_dir / "uploads"
+    visualizations_dir: Path = base_dir / "visualizations"
     
     # Logging
     log_level: str = "INFO"
     
     class Config:
-        env_file = ".env"
+        env_file = "app/.env"
         case_sensitive = False
         extra = "allow"  # Allow extra fields from .env
     
@@ -50,11 +46,13 @@ class Settings(BaseSettings):
     def setup_directories(self):
         """Create necessary directories"""
         self.uploads_dir.mkdir(exist_ok=True, parents=True)
+        self.visualizations_dir.mkdir(exist_ok=True, parents=True)
 
 
 @lru_cache()
 def get_settings() -> Settings:
     """Get cached settings instance (singleton pattern)"""
     settings = Settings()
+    # Tạo thư mục uploads
     settings.setup_directories()
     return settings
