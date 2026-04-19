@@ -1,11 +1,12 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import text, func
+from sqlalchemy import text, func, case, cast, Float, literal
+from sqlalchemy.dialects.postgresql import JSONB
 from typing import List, Optional, Tuple
 from .model import ImageMetadata
 from ...core.logging import get_logger
 from ...core.config import get_settings
 logger = get_logger(__name__)
-
+import math
 class ImageRepository:
     """Repository for image metadata database operations"""
     def __init__(self):
@@ -51,62 +52,84 @@ class ImageRepository:
             .offset(offset)\
             .all()
 
-    def get_by_id(self, db: Session, image_id: int) -> Optional[ImageMetadata]:
-        return db.query(ImageMetadata).filter(ImageMetadata.id == image_id).first()
-
     def search(self, 
                 db: Session, 
                 query_metadata: ImageMetadata,
                 limit: int = 10) -> List[Tuple]:
         """Perform 5-way weighted similarity search (20% each) directly in SQL"""
         try:
-            # Individual Similarity Formulas (1.0 - Distance)
-            # DINOv2 uses SQRT punishment model (defined below)
+            brightness_sim = 1.0 - func.sqrt(func.abs(ImageMetadata.brightness - query_metadata.brightness))
+            contrast_sim = 1.0 - func.sqrt(func.abs(ImageMetadata.contrast - query_metadata.contrast))
+            saturation_sim = 1.0 - func.sqrt(func.abs(ImageMetadata.saturation - query_metadata.saturation))
+            edge_density_sim = 1.0 - func.sqrt(func.abs(ImageMetadata.edge_density - query_metadata.edge_density))
+            hsv_histogram_sim = 1.0 - func.sqrt(ImageMetadata.hsv_histogram_vector.cosine_distance(query_metadata.hsv_histogram_vector))
+            rgb_histogram_sim = 1.0 - func.sqrt(ImageMetadata.rgb_histogram_vector.cosine_distance(query_metadata.rgb_histogram_vector))
+            hsv_cdf_sim = 1.0 - func.sqrt(ImageMetadata.hsv_cdf_vector.cosine_distance(query_metadata.hsv_cdf_vector))
+            rgb_cdf_sim = 1.0 - func.sqrt(ImageMetadata.rgb_cdf_vector.cosine_distance(query_metadata.rgb_cdf_vector))
+            hog_sim = 1 - func.sqrt(ImageMetadata.hog_vector.cosine_distance(query_metadata.hog_vector))
+            hu_sim = 1.0 - func.sqrt(ImageMetadata.hu_moments_vector.cosine_distance(query_metadata.hu_moments_vector))
+            dom_sim = 1.0 - ImageMetadata.dominant_color_vector.l2_distance(query_metadata.dominant_color_vector) / (math.sqrt(255*255*3))
+            cell_color_sim = 1.0 - ImageMetadata.cell_color_vector.l2_distance(query_metadata.cell_color_vector) / (math.sqrt(255*255*3*16))
+            lbp_sim = 1.0 - func.sqrt(ImageMetadata.lbp_vector.cosine_distance(query_metadata.lbp_vector))
+            color_moments_sim = 1.0 - func.sqrt(ImageMetadata.color_moments_vector.cosine_distance(query_metadata.color_moments_vector))
+            sharpness_sim = 1.0 - func.sqrt(func.abs(ImageMetadata.sharpness - query_metadata.sharpness) / (func.abs(ImageMetadata.sharpness + query_metadata.sharpness) + 1e-7))
+            gabor_sim = 1.0 - func.sqrt(ImageMetadata.gabor_vector.cosine_distance(query_metadata.gabor_vector))
+            ccv_sim = 1.0 - func.sqrt(ImageMetadata.ccv_vector.cosine_distance(query_metadata.ccv_vector))
+            zernike_sim = 1.0 - func.sqrt(ImageMetadata.zernike_vector.cosine_distance(query_metadata.zernike_vector))
+            geo_sim = 1.0 - func.sqrt(ImageMetadata.geo_vector.cosine_distance(query_metadata.geo_vector))
+            embedding_sim = 1.0 - func.sqrt(func.coalesce(ImageMetadata.llm_embedding.cosine_distance(query_metadata.llm_embedding), 1.0))
             
-            # Traditional attributes use Square Root Difference Similarity (1.0 - sqrt(|X-Q|))
-            # This is extremely sensitive to even minor differences (High sensitivity punishment)
-            b_sim = 1.0 - func.sqrt(func.abs(ImageMetadata.brightness - query_metadata.brightness))
-            c_sim = 1.0 - func.sqrt(func.abs(ImageMetadata.contrast - query_metadata.contrast))
-            s_sim = 1.0 - func.sqrt(func.abs(ImageMetadata.saturation - query_metadata.saturation))
-            e_sim = 1.0 - func.sqrt(func.abs(ImageMetadata.edge_density - query_metadata.edge_density))
+            # 19. Category Similarity (Exact Match) - Normalized to lowercase
+            query_category = (query_metadata.category or "General").lower()
+            category_sim = case((func.lower(ImageMetadata.category) == query_category, 1.0), else_=0.0)
             
-            # Vector attributes use 1.0 - sqrt(cosine_distance)
-            h_sim = 1.0 - ImageMetadata.histogram_vector.cosine_distance(query_metadata.histogram_vector)
-            hog_sim = 1.0 - ImageMetadata.hog_vector.cosine_distance(query_metadata.hog_vector)
-            hu_sim = 1.0 - ImageMetadata.hu_moments_vector.cosine_distance(query_metadata.hu_moments_vector)
+            # 20. Entity Similarity (Overlap Ratio)
+            query_entities = [e.lower() for e in (query_metadata.entities or [])]
+            if query_entities:
+                # Summing existence of each query tag in the image's entities JSON array
+                # Using @> operator with a small JSONB array for maximum robustness
+                entity_match_sum = sum([
+                    case((ImageMetadata.entities.cast(JSONB).contains([tag]), 1.0), else_=0.0) 
+                    for tag in query_entities
+                ])
+                entity_sim = entity_match_sum / len(query_entities)
+            else:
+                entity_sim = literal(0.0)
             
-            # DINOv2 uses SQL punishment model
-            dino_sim = 1.0 - func.sqrt(ImageMetadata.dinov2_vector.cosine_distance(query_metadata.dinov2_vector) / 2.0)
-            
-            # CLIP uses the same normalized punishment model
-            clip_sim = 1.0 - func.sqrt(ImageMetadata.clip_vector.cosine_distance(query_metadata.clip_vector) / 2.0)
-            
-            # Dominant Color Similarity (Perceptual Distance in Lab space)
-            # We use a sensitive normalization for color match
-            dom_dist = ImageMetadata.dominant_color_vector.l2_distance(query_metadata.dominant_color_vector)
-            dom_sim = 1.0 - func.sqrt(dom_dist / 200.0)
-            
-            # Hybrid scoring: Mix of CLIP (Semantic) + Histogram (Distribution) + Dominant Color (Theme)
-            # You can adjust these weights. Right now: 60% CLIP, 20% Histogram, 20% Dominant Color
-            total_sim = dom_sim
-            
+            # Total Similarity: Custom combined sum from USER + CDF components
+            total_sim = entity_sim + brightness_sim + contrast_sim + category_sim + saturation_sim + \
+                        edge_density_sim + hsv_histogram_sim + rgb_histogram_sim + \
+                        hsv_cdf_sim + rgb_cdf_sim
+            total_sim = cell_color_sim
             # Query returns the record plus all individual similarity components
             results = db.query(
                 ImageMetadata,
                 total_sim.label('similarity'),
-                dino_sim.label('dino_sim'),
-                clip_sim.label('clip_sim'),
-                dom_sim.label('dom_sim'),
-                b_sim.label('b_sim'),
-                c_sim.label('c_sim'),
-                s_sim.label('s_sim'),
-                e_sim.label('e_sim'),
-                h_sim.label('h_sim'),
+                brightness_sim.label('brightness_sim'),
+                contrast_sim.label('contrast_sim'),
+                saturation_sim.label('saturation_sim'),
+                edge_density_sim.label('edge_density_sim'),
+                hsv_histogram_sim.label('hsv_histogram_sim'),
+                rgb_histogram_sim.label('rgb_histogram_sim'),
                 hog_sim.label('hog_sim'),
-                hu_sim.label('hu_sim')
+                hu_sim.label('hu_sim'),
+                dom_sim.label('dom_sim'),
+                cell_color_sim.label('cell_color_sim'),
+                lbp_sim.label('lbp_similarity'),
+                color_moments_sim.label('color_moments_similarity'),
+                sharpness_sim.label('sharpness_similarity'),
+                gabor_sim.label('gabor_similarity'),
+                ccv_sim.label('ccv_similarity'),
+                zernike_sim.label('zernike_similarity'),
+                geo_sim.label('geo_sim'),
+                embedding_sim.label('embedding_sim'),
+                entity_sim.label('entity_sim'),
+                category_sim.label('category_sim'),
+                hsv_cdf_sim.label('hsv_cdf_sim'),
+                rgb_cdf_sim.label('rgb_cdf_sim')
             ).order_by(text('similarity DESC')).limit(limit).all()
             
             return results
         except Exception as e:
-            logger.error(f"Error performing 5-way hybrid search: {e}")
-            raise
+            logger.error(f"Error performing advanced hybrid search: {e}")
+            raise 

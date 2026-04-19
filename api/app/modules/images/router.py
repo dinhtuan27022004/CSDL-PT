@@ -34,12 +34,13 @@ def _parse_features_json(features_json):
 @router.post("/upload", response_model=List[ImageResponse])
 async def upload_images(
     files: List[UploadFile] = File(...),
+    force_llm: bool = False,
     db: Session = Depends(get_db),
     service: ImageService = Depends(get_image_service)
 ):
     try:
-        logger.info(f"Received {len(files)} images")
-        image_records = await service.process(db, files)
+        logger.info(f"Received {len(files)} images (force_llm={force_llm})")
+        image_records = await service.process(db, files, force_llm=force_llm)
         # Flush to DB (the service handles it, but commit ensures persistence)
         db.commit()
         return image_records
@@ -64,13 +65,14 @@ async def get_images(
 async def search_similar_images(
     file: UploadFile = File(...),
     limit: int = 5,
+    force_llm: bool = False,
     db: Session = Depends(get_db),
     service: ImageService = Depends(get_image_service)
 ):
     try:
 
         content = await file.read()
-        search_results = await service.search_similar(db, content, file.filename, limit=limit)
+        search_results = await service.search_similar(db, content, file.filename, limit=limit, force_llm=force_llm)
         
         return SearchResponse(
             query_image=search_results["query_features"],

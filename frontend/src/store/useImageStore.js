@@ -27,6 +27,10 @@ const useImageStore = create((set, get) => ({
     topK: parseInt(import.meta.env.VITE_DEFAULT_TOPK) || 5,
     metric: 'cosine', // 'cosine' | 'l2'
 
+    // Global sync scroll position
+    syncScrollLeft: 0,
+    setSyncScrollLeft: (scrollLeft) => set({ syncScrollLeft: scrollLeft }),
+
     // Selected result for metadata viewing
     selectedResult: null,
 
@@ -118,6 +122,11 @@ const useImageStore = create((set, get) => ({
                 previewUrl: (item.url || item.file_path) ? `${API_BASE_URL}${item.url || item.file_path}` : null,
                 hogPreviewUrl: item.hog_vis_path ? `${API_BASE_URL}${item.hog_vis_path}` : null,
                 huPreviewUrl: item.hu_vis_path ? `${API_BASE_URL}${item.hu_vis_path}` : null,
+                cellColorPreviewUrl: item.cell_color_vis_path ? `${API_BASE_URL}${item.cell_color_vis_path}` : null,
+                lbpPreviewUrl: item.lbp_vis_path ? `${API_BASE_URL}${item.lbp_vis_path}` : null,
+                gaborPreviewUrl: item.gabor_vis_path ? `${API_BASE_URL}${item.gabor_vis_path}` : null,
+                ccvPreviewUrl: item.ccv_vis_path ? `${API_BASE_URL}${item.ccv_vis_path}` : null,
+                histogramPreviewUrl: item.histogram_vis_path ? `${API_BASE_URL}${item.histogram_vis_path}` : null,
             }));
 
             set({ 
@@ -166,6 +175,8 @@ const useImageStore = create((set, get) => ({
                 previewUrl: (item.url || item.file_path) ? `${API_BASE_URL}${item.url || item.file_path}` : null,
                 hogPreviewUrl: item.hog_vis_path ? `${API_BASE_URL}${item.hog_vis_path}` : null,
                 huPreviewUrl: item.hu_vis_path ? `${API_BASE_URL}${item.hu_vis_path}` : null,
+                cellColorPreviewUrl: item.cell_color_vis_path ? `${API_BASE_URL}${item.cell_color_vis_path}` : null,
+                lbpPreviewUrl: item.lbp_vis_path ? `${API_BASE_URL}${item.lbp_vis_path}` : null,
                 status: 'completed'
             }));
             console.log(historyWithPreviews);
@@ -311,6 +322,10 @@ const useImageStore = create((set, get) => ({
                     previewUrl: `${API_BASE_URL}${result.url || result.file_path}`,
                     hogPreviewUrl: result.hog_vis_path ? `${API_BASE_URL}${result.hog_vis_path}` : null,
                     huPreviewUrl: result.hu_vis_path ? `${API_BASE_URL}${result.hu_vis_path}` : null,
+                    cellColorPreviewUrl: result.cell_color_vis_path ? `${API_BASE_URL}${result.cell_color_vis_path}` : null,
+                    lbpPreviewUrl: result.lbp_vis_path ? `${API_BASE_URL}${result.lbp_vis_path}` : null,
+                    gaborPreviewUrl: result.gabor_vis_path ? `${API_BASE_URL}${result.gabor_vis_path}` : null,
+                    ccvPreviewUrl: result.ccv_vis_path ? `${API_BASE_URL}${result.ccv_vis_path}` : null,
                     status: 'completed'
                 }));
 
@@ -373,6 +388,8 @@ const useImageStore = create((set, get) => ({
                 previewUrl: (item.url || item.file_path) ? `${API_BASE_URL}${item.url || item.file_path}` : null,
                 hogPreviewUrl: item.hog_vis_path ? `${API_BASE_URL}${item.hog_vis_path}` : null,
                 huPreviewUrl: item.hu_vis_path ? `${API_BASE_URL}${item.hu_vis_path}` : null,
+                cellColorPreviewUrl: item.cell_color_vis_path ? `${API_BASE_URL}${item.cell_color_vis_path}` : null,
+                lbpPreviewUrl: item.lbp_vis_path ? `${API_BASE_URL}${item.lbp_vis_path}` : null,
                 status: 'completed'
             }));
 

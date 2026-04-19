@@ -8,7 +8,7 @@ LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 
 # Cấu hình định dạng log
-LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+LOG_FORMAT = "%(asctime)s-%(levelname)s-%(message)s-%(name)s"
 DATE_FORMAT = "%H:%M:%S"
 
 def setup_logging():

@@ -20,7 +20,12 @@ class Settings(BaseSettings):
     api_port: int
     api_title: str = "Image Similarity Search API"
     api_description: str = "Upload images and search for similar ones (Modular Architecture)"
-    api_version: str = "2.1.0"
+    api_version: str = "2.2.0"
+    
+    # OpenRouter
+    openrouter_api_key: str = ""
+    llm_vision_model: str = "google/gemini-2.0-flash-001"
+    llm_embedding_model: str = "BAAI/bge-m3"
     
     # CORS
     cors_origins: List[str] = ["http://localhost:5173"]
