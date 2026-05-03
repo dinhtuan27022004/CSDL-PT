@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
-from .service import HealthService
-from .schema import HealthResponse
+from ..services.health_service import HealthService
+from ..schemas.health import HealthResponse
 
 router = APIRouter(tags=["health"])
 

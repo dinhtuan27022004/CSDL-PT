@@ -29,9 +29,7 @@ def setup_logging():
     logger.addHandler(console_handler)
     
     # 2. Rotating File Handler (Lưu vào file logs/app.log)
-    # Xóa file log cũ để làm sạch
-    for log_file in LOG_DIR.glob("app.log*"):
-        log_file.unlink(missing_ok=True)
+    # Don't delete log files here, RotatingFileHandler will handle rotation
     
     file_handler = RotatingFileHandler(
         LOG_DIR / "app.log",

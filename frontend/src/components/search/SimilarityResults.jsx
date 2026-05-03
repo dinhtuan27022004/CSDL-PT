@@ -3,270 +3,41 @@ import useImageStore from '../../store/useImageStore';
 import Card from '../common/Card';
 import Badge from '../common/Badge';
 import { formatDate } from '../../utils/formatters';
-import { Image as ImageIcon, Sparkles, BrainCircuit } from 'lucide-react';
+import { Image as ImageIcon, Sparkles, BrainCircuit, Zap } from 'lucide-react';
 
-const ResultCard = ({ item, index, getSimilarityColor }) => {
-    const ribbonRef = useRef(null);
-    const { syncScrollLeft, setSyncScrollLeft } = useImageStore();
-    const isScrollingRef = useRef(false);
-
-    // Sync scroll from store to DOM
-    useEffect(() => {
-        if (ribbonRef.current && !isScrollingRef.current) {
-            ribbonRef.current.scrollLeft = syncScrollLeft;
-        }
-    }, [syncScrollLeft]);
-
-    const handleScroll = (e) => {
-        if (ribbonRef.current) {
-            isScrollingRef.current = true;
-            setSyncScrollLeft(e.target.scrollLeft);
-            // Reset flag after a short delay to allow store update to propogate
-            setTimeout(() => {
-                isScrollingRef.current = false;
-            }, 50);
-        }
-    };
-
-    return (
-        <div
-            className="bg-slate-800/50 border border-slate-700/50 rounded-lg overflow-hidden hover:border-slate-500/50 transition-all flex flex-row h-[480px] group"
-        >
-            {/* Column 1: Main Image Preview (400x400) */}
-            <div className="relative w-[400px] h-full shrink-0 bg-slate-900 flex items-center justify-center overflow-hidden border-r border-slate-700/50">
-                {item.previewUrl ? (
-                    <img
-                        src={item.previewUrl}
-                        alt={item.file_name}
-                        className="w-full h-full object-cover transition-transform group-hover:scale-105"
-                    />
-                ) : (
-                    <ImageIcon className="w-12 h-12 text-slate-600" />
-                )}
-
-                {/* Similarity Badge Overlay */}
-                <div className="absolute top-2 right-2">
-                    <Badge variant={item.similarity > 80 ? 'success' : item.similarity > 50 ? 'warning' : 'default'} className="text-sm font-bold shadow-lg shadow-black/50">
-                        {item.similarity.toFixed(1)}% Match
-                    </Badge>
-                </div>
-
-                {/* Rank Badge overlay */}
-                <div className="absolute top-2 left-2 bg-slate-900/80 text-white text-xs px-2 py-1 rounded font-mono shadow-lg shadow-black/50">
-                    #{index + 1}
-                </div>
-            </div>
-
-            {/* Column 2: Stats & Metadata (220px Fixed) */}
-            <div className="w-[220px] shrink-0 border-r border-slate-700/50 p-4 flex flex-col bg-slate-800/20 overflow-y-auto custom-scrollbar">
-                <div className="mb-4">
-                    <h4 className="font-bold text-white text-sm truncate mb-1" title={item.file_name}>
-                        {item.file_name}
-                    </h4>
-                    <div className="flex flex-col">
-                        <span className="text-[9px] text-slate-500 uppercase font-black tracking-widest">Total Match</span>
-                        <span
-                            className="text-xl font-black font-mono leading-none"
-                            style={{ color: getSimilarityColor(item.similarity) }}
-                        >
-                            {item.similarity.toFixed(1)}%
-                        </span>
-                    </div>
-                </div>
-
-                <div className="space-y-3 flex-1">
-                    <div className="space-y-2">
-                        <div className="flex justify-between items-center">
-                            <span className="text-slate-500 text-[10px] font-bold uppercase">Brightness</span>
-                            <span className="text-[10px] text-slate-300 font-mono">{(item.brightness_similarity || 0).toFixed(0)}%</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-slate-500 text-[10px] font-bold uppercase">Contrast</span>
-                            <span className="text-[10px] text-slate-300 font-mono">{(item.contrast_similarity || 0).toFixed(0)}%</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-slate-500 text-[10px] font-bold uppercase">Saturation</span>
-                            <span className="text-[10px] text-slate-300 font-mono">{(item.saturation_similarity || 0).toFixed(0)}%</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-slate-500 text-[10px] font-bold uppercase">Edges</span>
-                            <span className="text-[10px] text-slate-300 font-mono">{(item.edge_density_similarity || 0).toFixed(0)}%</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-slate-500 text-[10px] font-bold uppercase">Fourier</span>
-                            <span className="text-[10px] text-slate-300 font-mono">{(item.zernike_similarity || 0).toFixed(0)}%</span>
-                        </div>
-                    </div>
-
-                    <div className="pt-2 border-t border-indigo-500/30 space-y-2">
-                        <div className="flex justify-between items-center">
-                            <span className="text-indigo-400 text-[10px] font-bold uppercase">Embedding Match</span>
-                            <span className="text-[10px] font-bold font-mono text-indigo-300">{(item.semantic_similarity || 0).toFixed(0)}%</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-emerald-400 text-[10px] font-bold uppercase">Entity Match</span>
-                            <span className="text-[10px] font-bold font-mono text-emerald-300">{(item.entity_similarity || 0).toFixed(0)}%</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-amber-400 text-[10px] font-bold uppercase">Category Match</span>
-                            <span className="text-[10px] font-bold font-mono text-amber-300">{(item.category_similarity || 0).toFixed(0)}%</span>
-                        </div>
-                    </div>
-
-                    <div className="pt-2 border-t border-slate-700/50 space-y-2">
-                        <div className="flex justify-between items-center">
-                            <span className="text-slate-500 text-[10px] font-bold uppercase">HSV Hist</span>
-                            <span className="text-[10px] font-bold font-mono text-primary-400">{(item.hsv_histogram_similarity || 0).toFixed(0)}%</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-slate-500 text-[10px] font-bold uppercase">RGB Hist</span>
-                            <span className="text-[10px] font-bold font-mono text-primary-400">{(item.rgb_histogram_similarity || 0).toFixed(0)}%</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-slate-500 text-[10px] font-bold uppercase">HSV CDF</span>
-                            <span className="text-[10px] font-bold font-mono text-emerald-400">{(item.hsv_cdf_similarity || 0).toFixed(0)}%</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                            <span className="text-slate-500 text-[10px] font-bold uppercase">RGB CDF</span>
-                            <span className="text-[10px] font-bold font-mono text-emerald-400">{(item.rgb_cdf_similarity || 0).toFixed(0)}%</span>
-                        </div>
-                    </div>
-
-                    <div className="pt-2 border-t border-slate-700/50">
-                        <span className="text-slate-500 text-[10px] font-bold uppercase block mb-1">Dominant Color</span>
-                        <div className="flex items-center gap-2">
-                            <div
-                                className="w-5 h-5 rounded border border-slate-600"
-                                style={{ backgroundColor: item.dominant_color_hex }}
-                            />
-                            <span className="text-slate-400 font-mono text-[10px]">{item.dominant_color_hex}</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            {/* Column 3: AI Insights (300px Fixed) - NEW */}
-            <div className="w-[300px] shrink-0 border-r border-slate-700/50 p-5 flex flex-col bg-blue-900/10 overflow-y-auto custom-scrollbar">
-                <div className="flex items-center gap-2 mb-4">
-                    <BrainCircuit className="w-4 h-4 text-primary-400" />
-                    <span className="text-[10px] text-primary-400 uppercase font-black tracking-widest">AI Insights</span>
-                </div>
-
-                <div className="mb-6">
-                    <span className="text-[9px] text-slate-500 uppercase font-bold block mb-1.5">Detected Category</span>
-                    <div className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-primary-500/20 text-primary-400 border border-primary-500/30">
-                        {item.category || 'Analyzing...'}
-                    </div>
-                </div>
-
-                <div className="mb-4 flex flex-col min-h-0">
-                    <span className="text-[9px] text-slate-500 uppercase font-bold block mb-2">Detected Objects</span>
-                    <div className="flex flex-wrap gap-1.5 overflow-y-auto max-h-[80px] custom-scrollbar pr-1">
-                        {item.entities && item.entities.length > 0 ? (
-                            item.entities.map((tag, idx) => (
-                                <span 
-                                    key={idx} 
-                                    className="px-2 py-0.5 rounded bg-slate-700/50 text-[10px] text-slate-300 border border-slate-600/50 hover:border-primary-500/50 transition-colors"
-                                >
-                                    {tag}
-                                </span>
-                            ))
-                        ) : (
-                            <span className="text-[10px] text-slate-600 italic">None detected</span>
-                        )}
-                    </div>
-                </div>
-
-                <div className="flex-1 flex flex-col min-h-0">
-                    <span className="text-[9px] text-slate-500 uppercase font-bold block mb-2">Visual Description</span>
-                    <div className="bg-slate-900/50 rounded-lg p-3 border border-slate-700/50 flex-1 overflow-y-auto">
-                        <p className="text-sm text-slate-300 leading-relaxed italic">
-                            {item.description || "The system is extracting advanced semantic details for this image..."}
-                        </p>
-                    </div>
-                </div>
-            </div>
-
-            {/* Column 4: Visual Ribbon (Horizontal Scroll) */}
-            <div 
-                ref={ribbonRef}
-                onScroll={handleScroll}
-                className="flex-1 overflow-x-auto overflow-y-hidden bg-slate-900/40 custom-scrollbar flex flex-row p-4 gap-8 scroll-smooth"
-            >
-                {item.histogramPreviewUrl && (
-                    <div className="flex flex-col gap-2 shrink-0 w-[600px]">
-                        <span className="text-[10px] text-slate-500 uppercase font-black tracking-widest px-1">Histogram Distribution (HSV + RGB Channels)</span>
-                        <div className="flex-1 rounded border border-slate-700 overflow-hidden bg-slate-950 shadow-2xl">
-                            <img src={item.histogramPreviewUrl} alt="Histogram" className="w-full h-full object-fill" />
-                        </div>
-                    </div>
-                )}
-
-                {item.hogPreviewUrl && (
-                    <div className="flex flex-col gap-2 shrink-0 w-[400px]">
-                        <span className="text-[10px] text-slate-500 uppercase font-black tracking-widest px-1">HOG Gradient Map ({(item.hog_similarity || 0).toFixed(0)}%)</span>
-                        <div className="flex-1 rounded border border-slate-700 overflow-hidden bg-black shadow-2xl">
-                            <img src={item.hogPreviewUrl} alt="HOG" className="w-full h-full object-contain" />
-                        </div>
-                    </div>
-                )}
-
-                {item.ccvPreviewUrl && (
-                    <div className="flex flex-col gap-2 shrink-0 w-[400px]">
-                        <span className="text-[10px] text-slate-500 uppercase font-black tracking-widest px-1">Color Coherence ({(item.ccv_similarity || 0).toFixed(0)}%)</span>
-                        <div className="flex-1 rounded border border-slate-700 overflow-hidden bg-black shadow-2xl">
-                            <img src={item.ccvPreviewUrl} alt="CCV" className="w-full h-full object-contain" />
-                        </div>
-                    </div>
-                )}
-
-                {item.gaborPreviewUrl && (
-                    <div className="flex flex-col gap-2 shrink-0 w-[400px]">
-                        <span className="text-[10px] text-slate-500 uppercase font-black tracking-widest px-1">Gabor Texture ({(item.gabor_similarity || 0).toFixed(0)}%)</span>
-                        <div className="flex-1 rounded border border-slate-700 overflow-hidden bg-black shadow-2xl">
-                            <img src={item.gaborPreviewUrl} alt="Gabor" className="w-full h-full object-contain" />
-                        </div>
-                    </div>
-                )}
-
-                {item.lbpPreviewUrl && (
-                    <div className="flex flex-col gap-2 shrink-0 w-[400px]">
-                        <span className="text-[10px] text-slate-500 uppercase font-black tracking-widest px-1">LBP Texture ({(item.lbp_similarity || 0).toFixed(0)}%)</span>
-                        <div className="flex-1 rounded border border-slate-700 overflow-hidden bg-black shadow-2xl">
-                            <img src={item.lbpPreviewUrl} alt="LBP" className="w-full h-full object-contain" />
-                        </div>
-                    </div>
-                )}
-
-                {item.cellColorPreviewUrl && (
-                    <div className="flex flex-col gap-2 shrink-0 w-[400px]">
-                        <span className="text-[10px] text-slate-500 uppercase font-black tracking-widest px-1">Cell Color Grid ({(item.cell_color_similarity || 0).toFixed(0)}%)</span>
-                        <div className="flex-1 rounded border border-slate-700 overflow-hidden bg-black shadow-2xl">
-                            <img src={item.cellColorPreviewUrl} alt="Cell Color" className="w-full h-full object-contain" />
-                        </div>
-                    </div>
-                )}
-
-                {item.huPreviewUrl && (
-                    <div className="flex flex-col gap-2 shrink-0 w-[400px]">
-                        <span className="text-[10px] text-slate-500 uppercase font-black tracking-widest px-1">Hu Moments ({(item.hu_moments_similarity || 0).toFixed(0)}%)</span>
-                        <div className="flex-1 rounded border border-slate-700 overflow-hidden bg-black shadow-2xl">
-                            <img src={item.huPreviewUrl} alt="Hu" className="w-full h-full object-contain" />
-                        </div>
-                    </div>
-                )}
-            </div>
-        </div>
-    );
-};
+const VIS_COMPONENTS = [
+    { id: 'histogram', label: 'Histogram', width: 450, color: 'text-primary-400' },
+    { id: 'hog', label: 'HOG Map', width: 180, color: 'text-orange-400' },
+    { id: 'ccv', label: 'Color Coherence', width: 180, color: 'text-emerald-400' },
+    { id: 'gabor', label: 'Gabor Texture', width: 180, color: 'text-purple-400' },
+    { id: 'lbp', label: 'LBP Texture', width: 180, color: 'text-pink-400' },
+    { id: 'cellColor', label: 'Cell Grid', width: 180, color: 'text-lime-400' },
+    { id: 'hu', label: 'Hu Moments', width: 180, color: 'text-amber-400' },
+];
 
 const SimilarityResults = () => {
-    const { similarityResults, similarityLoading, queryImageFeatures, queryImagePreviewUrl } = useImageStore();
+    const { similarityResults, gtResults, similarityLoading, queryImageFeatures, queryImagePreviewUrl } = useImageStore();
+    const [enabledVis, setEnabledVis] = React.useState({
+        histogram: true,
+        hog: true,
+        ccv: false,
+        gabor: false,
+        lbp: true,
+        cellColor: false,
+        hu: false
+    });
 
-    const getSimilarityColor = (percent) => {
-        // Map 0-100 to 0 (Red) - 120 (Green) in HSL
-        const hue = (percent * 1.2).toFixed(0);
-        return `hsl(${hue}, 80%, 50%)`;
+    const toggleVis = (id) => {
+        setEnabledVis(prev => ({ ...prev, [id]: !prev[id] }));
+    };
+
+    const bgrToHex = (bgr) => {
+        if (!bgr || !Array.isArray(bgr) || bgr.length < 3) return '#808080';
+        const [b, g, r] = bgr;
+        return '#' + [r, g, b].map(x => {
+            const hex = Math.round(x).toString(16);
+            return hex.length === 1 ? '0' + hex : hex;
+        }).join('');
     };
 
     if (similarityResults.length === 0 && !similarityLoading) {
@@ -274,126 +45,255 @@ const SimilarityResults = () => {
     }
 
     return (
-        <Card className="p-6">
-            <h3 className="text-xl font-semibold text-white mb-6">Search Results</h3>
+        <Card className="p-4 bg-slate-950 border-slate-800">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 mb-4">
+                <div>
+                    <h3 className="text-xl font-black text-white uppercase tracking-tighter">Search Analysis Matrix</h3>
+                    <p className="text-slate-500 text-xs">Professional vision analysis matrix • 1:1 Vis Mode • Height Synchronized</p>
+                </div>
+            </div>
 
-            {/* Display Query Image Features if available */}
+            {/* Display Query Image Features */}
             {queryImageFeatures && (
-                <div className="mb-8">
-                    <h4 className="text-sm font-semibold text-slate-400 mb-3 uppercase tracking-wider">Query Image Features</h4>
-                    <div className="bg-slate-800/80 border border-primary-500/50 rounded-lg overflow-hidden flex flex-row h-[300px]">
-                        {/* Image Preview - Left */}
-                        <div className="relative w-[300px] aspect-square flex-shrink-0 bg-slate-900 flex items-center justify-center overflow-hidden">
+                <div className="mb-6">
+                    <div className="bg-slate-900 border border-slate-700 overflow-hidden flex flex-col md:flex-row shadow-2xl">
+                        <div className="relative w-full md:w-[450px] aspect-video bg-black flex items-center justify-center overflow-hidden border-b md:border-b-0 md:border-r border-slate-700/50">
                             {queryImagePreviewUrl ? (
                                 <img
                                     src={queryImagePreviewUrl}
                                     alt="Query Image"
-                                    className="w-full h-full object-cover"
+                                    className="w-full h-full object-contain"
                                 />
                             ) : (
-                                <ImageIcon className="w-12 h-12 text-slate-600" />
+                                <ImageIcon className="w-10 h-10 text-slate-800" />
                             )}
-                            {/* Input Badge */}
-                            <div className="absolute top-2 left-2 bg-primary-500 text-white text-xs px-2 py-1 rounded font-mono shadow-lg shadow-black/50">
-                                INPUT IMAGE
+                            <div className="absolute top-2 left-2 bg-primary-600 text-white text-[9px] font-black px-2 py-0.5 shadow-xl uppercase tracking-widest">
+                                Input Source
                             </div>
                         </div>
 
-                        {/* Metadata - Right */}
-                        <div className="p-4 flex-1 flex flex-col justify-between">
-                            <div className="flex items-start">
-                                <div className="flex-1 min-w-0">
-                                    <h4 className="font-medium text-white text-base mb-1 truncate">
-                                        Query Image
-                                    </h4>
-                                    <p className="text-sm text-slate-400 font-mono">
-                                        {queryImageFeatures.width} × {queryImageFeatures.height}
-                                    </p>
+                        <div className="p-4 flex-1 flex flex-col bg-slate-900/50">
+                            <div className="flex justify-between items-start mb-4">
+                                <div>
+                                    <h4 className="text-sm font-black text-white uppercase tracking-widest mb-0.5">Query Metadata</h4>
+                                    <span className="text-[10px] font-mono text-slate-500">{queryImageFeatures.width}px × {queryImageFeatures.height}px</span>
                                 </div>
+                                <BrainCircuit className="w-6 h-6 text-primary-500/30" />
                             </div>
 
-                            {/* Stats Grid */}
-                            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm mb-2">
-                                <div className="flex flex-col">
-                                    <span className="text-slate-500 text-xs mb-1">Brightness</span>
-                                    <span className="text-slate-200 font-medium">{(queryImageFeatures.brightness * 100).toFixed(1)}%</span>
-                                </div>
-                                <div className="flex flex-col">
-                                    <span className="text-slate-500 text-xs mb-1">Contrast</span>
-                                    <span className="text-slate-200 font-medium">{(queryImageFeatures.contrast * 100).toFixed(1)}%</span>
-                                </div>
-                                <div className="flex flex-col">
-                                    <span className="text-slate-500 text-xs mb-1">Saturation</span>
-                                    <span className="text-slate-200 font-medium">
-                                        {queryImageFeatures.saturation !== undefined ? (queryImageFeatures.saturation * 100).toFixed(1) + '%' : 'N/A'}
-                                    </span>
-                                </div>
-                                <div className="flex flex-col">
-                                    <span className="text-slate-500 text-xs mb-1">Edge Density</span>
-                                    <span className="text-slate-200 font-medium">{(queryImageFeatures.edge_density * 100).toFixed(1)}%</span>
-                                </div>
-                                <div className="flex flex-col">
-                                    <span className="text-slate-500 text-xs mb-1">Dominant Color</span>
-                                    <div className="flex items-center gap-2">
-                                        <div
-                                            className="w-4 h-4 rounded border border-slate-600"
-                                            style={{ backgroundColor: queryImageFeatures.dominant_color_hex }}
-                                        />
-                                        <span className="text-slate-200 font-mono text-xs">{queryImageFeatures.dominant_color_hex}</span>
+                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+                                <div className="space-y-0.5">
+                                    <span className="text-[9px] font-black text-slate-600 uppercase">Brightness</span>
+                                    <div className="h-1 w-full bg-slate-800 overflow-hidden">
+                                        <div className="h-full bg-blue-500" style={{ width: `${(queryImageFeatures.brightness || 0) * 100}%` }}></div>
                                     </div>
+                                    <span className="text-[10px] font-mono text-slate-400">{((queryImageFeatures.brightness || 0) * 100).toFixed(1)}%</span>
                                 </div>
-                                <div className="flex flex-col">
-                                    <span className="text-slate-500 text-xs mb-1">Status</span>
-                                    <span className="text-primary-400 font-medium text-xs whitespace-nowrap">
-                                        Extracted for search
-                                    </span>
+                                <div className="space-y-0.5">
+                                    <span className="text-[9px] font-black text-slate-600 uppercase">Contrast</span>
+                                    <div className="h-1 w-full bg-slate-800 overflow-hidden">
+                                        <div className="h-full bg-emerald-500" style={{ width: `${(queryImageFeatures.contrast || 0) * 100}%` }}></div>
+                                    </div>
+                                    <span className="text-[10px] font-mono text-slate-400">{((queryImageFeatures.contrast || 0) * 100).toFixed(1)}%</span>
+                                </div>
+                                <div className="space-y-0.5">
+                                    <span className="text-[9px] font-black text-slate-600 uppercase">Edges</span>
+                                    <div className="h-1 w-full bg-slate-800 overflow-hidden">
+                                        <div className="h-full bg-orange-500" style={{ width: `${(queryImageFeatures.edge_density || 0) * 100}%` }}></div>
+                                    </div>
+                                    <span className="text-[10px] font-mono text-slate-400">{((queryImageFeatures.edge_density || 0) * 100).toFixed(1)}%</span>
+                                </div>
+                                <div className="space-y-0.5">
+                                    <span className="text-[9px] font-black text-slate-600 uppercase">Main Color</span>
+                                    <div className="flex items-center gap-2 mt-1">
+                                        <div className="w-6 h-3 border border-slate-700" style={{ backgroundColor: bgrToHex(queryImageFeatures.dominant_color_vector) }}></div>
+                                        <span className="text-[10px] font-mono text-slate-400 uppercase">{bgrToHex(queryImageFeatures.dominant_color_vector)}</span>
+                                    </div>
                                 </div>
                             </div>
-
-                            {/* Semantic Info - NEW */}
-                            {(queryImageFeatures.category || queryImageFeatures.description) && (
-                                <div className="mt-4 p-3 bg-blue-900/10 rounded-lg border border-primary-500/20">
-                                    <div className="flex items-center gap-2 mb-2">
-                                        <BrainCircuit className="w-3 h-3 text-primary-400" />
-                                        <span className="text-[10px] text-primary-400 uppercase font-black tracking-widest">AI Result</span>
-                                    </div>
-                                    <div className="flex flex-col gap-2">
-                                        <div className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold bg-primary-500/20 text-primary-400 self-start">
-                                            {queryImageFeatures.category || 'Analyzing...'}
-                                        </div>
-                                        <p className="text-xs text-slate-300 italic line-clamp-2">
-                                            {queryImageFeatures.description}
-                                        </p>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* Raw Features JSON */}
-                            {queryImageFeatures.features_json && (
-                                <div className="mt-auto pt-4 border-t border-slate-700/50 flex flex-col flex-1 min-h-0">
-                                    <span className="text-slate-500 text-[10px] uppercase font-bold tracking-wider mb-1">Raw Features</span>
-                                    <div className="bg-slate-950/50 rounded p-2 overflow-y-auto text-[10px] font-mono text-slate-400 border border-slate-800/50">
-                                        <pre className="whitespace-pre-wrap break-all">
-                                            {JSON.stringify(queryImageFeatures.features_json, null, 2)}
-                                        </pre>
-                                    </div>
-                                </div>
-                            )}
                         </div>
                     </div>
                 </div>
             )}
 
-            <div className="flex flex-col gap-6 overflow-y-auto pr-2">
-                {similarityResults.map((item, index) => (
-                    <ResultCard 
-                        key={item.id} 
-                        item={item} 
-                        index={index} 
-                        getSimilarityColor={getSimilarityColor} 
-                    />
-                ))}
+            {/* Matrix View Toggles */}
+            <div className="mb-4 p-2 bg-slate-900 border border-slate-800">
+                <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[9px] font-black text-slate-600 uppercase tracking-widest mr-2">Visualizers:</span>
+                    {VIS_COMPONENTS.map(vis => (
+                        <button
+                            key={vis.id}
+                            onClick={() => toggleVis(vis.id)}
+                            className={`px-2 py-1 text-[9px] font-black transition-all uppercase tracking-tighter border ${
+                                enabledVis[vis.id] 
+                                    ? 'bg-primary-700 border-primary-600 text-white' 
+                                    : 'bg-slate-800 border-slate-700 text-slate-600 hover:text-slate-500'
+                            }`}
+                        >
+                            {vis.label}
+                        </button>
+                    ))}
+                </div>
             </div>
+
+            {gtResults && gtResults.length > 0 ? (
+                /* Comparison Mode Layout */
+                <div className="grid grid-cols-2 gap-4">
+                    <div className="border-b border-primary-500/30 pb-1 mb-2">
+                        <h4 className="text-sm font-black text-white uppercase tracking-tighter">Optimized Results</h4>
+                    </div>
+                    <div className="border-b border-emerald-500/30 pb-1 mb-2">
+                        <h4 className="text-sm font-black text-white uppercase tracking-tighter">Ground Truth Results</h4>
+                    </div>
+
+                    {Array.from({ length: Math.max(similarityResults.length, gtResults.length) }).map((_, idx) => (
+                        <React.Fragment key={idx}>
+                            <div className="relative group">
+                                {similarityResults[idx] && (
+                                    <div className="bg-slate-900 border border-slate-800 overflow-hidden shadow-xl">
+                                        <div className="relative w-full aspect-video bg-black">
+                                            <img src={similarityResults[idx].previewUrl} className="w-full h-full object-cover" />
+                                            <div className="absolute top-1 right-1 bg-primary-600/90 text-white text-[9px] font-black px-1.5 py-0.5 shadow-lg">
+                                                {similarityResults[idx].similarity.toFixed(1)}%
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                                <div className="absolute -left-3 top-1/2 -translate-y-1/2 text-[8px] font-black text-slate-700 rotate-180 [writing-mode:vertical-lr]">RANK #{idx + 1}</div>
+                            </div>
+                            <div className="relative group">
+                                {gtResults[idx] && (
+                                    <div className="bg-slate-900 border border-slate-800 overflow-hidden shadow-xl">
+                                        <div className="relative w-full aspect-video bg-black">
+                                            <img src={gtResults[idx].previewUrl} className="w-full h-full object-cover" />
+                                            <div className="absolute top-1 right-1 bg-emerald-600/90 text-white text-[9px] font-black px-1.5 py-0.5 shadow-lg">
+                                                {gtResults[idx].similarity.toFixed(1)}%
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </React.Fragment>
+                    ))}
+                </div>
+            ) : (
+                /* Matrix Table Layout */
+                <div className="relative overflow-x-auto overflow-y-hidden border border-slate-800 bg-slate-950 custom-scrollbar">
+                    <table className="w-full text-left border-collapse min-w-max">
+                        <thead>
+                            <tr className="bg-slate-900 border-b border-slate-800">
+                                <th className="px-0.5 py-2 w-12 text-[9px] font-black text-slate-600 uppercase tracking-widest text-center">Rank</th>
+                                <th className="px-0.5 py-2 w-80 text-[9px] font-black text-slate-600 uppercase tracking-widest">Main Result (16:9)</th>
+                                <th className="px-0.5 py-2 w-80 text-[9px] font-black text-slate-600 uppercase tracking-widest">Vision Metrics</th>
+                                {VIS_COMPONENTS.map(vis => enabledVis[vis.id] && (
+                                    <th key={vis.id} className={`px-0.5 py-2 text-[9px] font-black uppercase tracking-widest ${vis.color}`} style={{ width: vis.width }}>
+                                        {vis.label}
+                                    </th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/50">
+                            {similarityResults.map((item, idx) => (
+                                <tr key={item.id} className="group hover:bg-slate-900/60 transition-colors border-b border-slate-800/30">
+                                    <td className="px-0 py-1 text-center border-r border-slate-800/30">
+                                        <span className="text-sm font-black text-slate-700 group-hover:text-primary-500 transition-colors">#{idx + 1}</span>
+                                    </td>
+                                    <td className="px-0 py-1 border-r border-slate-800/30">
+                                        <div className="relative w-80 h-[180px] overflow-hidden border-x border-slate-800/50 group-hover:border-primary-500 transition-all shadow-xl">
+                                            <img src={item.previewUrl} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
+                                            <div className="absolute top-0 right-0 bg-primary-600 text-white text-[8px] font-black px-1.5 py-0.5">
+                                                {item.similarity.toFixed(1)}%
+                                            </div>
+                                        </div>
+                                        <div className="mt-0.5 px-2 text-[7px] font-bold text-slate-600 truncate max-w-[320px] uppercase">{item.file_name}</div>
+                                    </td>
+                                    <td className="px-1 py-1 align-top border-r border-slate-800/30 bg-slate-900/20">
+                                        <div className="grid grid-cols-2 gap-x-2 gap-y-0 text-[7px]">
+                                            {/* Deep Semantic Models */}
+                                            <div className="flex justify-between items-center border-b border-slate-800/50 py-0.5"><span className="text-purple-500 font-black uppercase">CLIP</span><span className="font-mono text-purple-400">{(item.clip_similarity || 0).toFixed(0)}%</span></div>
+                                            <div className="flex justify-between items-center border-b border-slate-800/50 py-0.5"><span className="text-pink-500 font-black uppercase">DINO</span><span className="font-mono text-pink-400">{(item.dinov2_similarity || 0).toFixed(0)}%</span></div>
+                                            <div className="flex justify-between items-center border-b border-slate-800/50 py-0.5"><span className="text-rose-500 font-black uppercase">SAM</span><span className="font-mono text-rose-400">{(item.sam_similarity || 0).toFixed(0)}%</span></div>
+                                            <div className="flex justify-between items-center border-b border-slate-800/50 py-0.5"><span className="text-sky-500 font-black uppercase">DREAM</span><span className="font-mono text-sky-400">{(item.dreamsim_similarity || 0).toFixed(0)}%</span></div>
+                                            
+                                            {/* Multi-Space Matrix (Grouped) */}
+                                            {["rgb", "hsv", "lab", "ycrcb", "hls", "xyz", "gray"].map(space => (
+                                                <div key={space} className="flex justify-between items-center border-b border-slate-800/50 py-0.5">
+                                                    <span className={`font-black uppercase ${
+                                                        space === 'rgb' ? 'text-red-500' :
+                                                        space === 'hsv' ? 'text-orange-500' :
+                                                        space === 'lab' ? 'text-emerald-500' :
+                                                        space === 'ycrcb' ? 'text-blue-500' :
+                                                        space === 'hls' ? 'text-purple-500' :
+                                                        space === 'xyz' ? 'text-amber-500' : 'text-slate-400'
+                                                    }`}>{space}</span>
+                                                    <span className="font-mono text-slate-400">
+                                                        {(item[`${space}_hist_gauss_similarity`] || item[`${space}_hist_std_similarity`] || 0).toFixed(0)}%
+                                                    </span>
+                                                </div>
+                                            ))}
+                                            
+                                            {/* Metadata */}
+                                            <div className="flex justify-between items-center py-0.5 col-span-2 text-slate-500 font-bold uppercase italic">
+                                                <span>{item.category || "General"}</span>
+                                                <span>{(item.edge_density_similarity || 0).toFixed(0)}% Edge</span>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    {enabledVis.histogram && (
+                                        <td className="px-0 py-1 border-r border-slate-800/30">
+                                            <div className="w-[450px] h-[180px] bg-slate-950 border-x border-slate-800 overflow-hidden">
+                                                {item.histogramPreviewUrl ? <img src={item.histogramPreviewUrl} className="w-full h-full object-fill" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                            </div>
+                                        </td>
+                                    )}
+                                    {enabledVis.hog && (
+                                        <td className="px-0 py-1 border-r border-slate-800/30">
+                                            <div className="w-[180px] h-[180px] bg-black border-x border-slate-800 overflow-hidden">
+                                                {item.hogPreviewUrl ? <img src={item.hogPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                            </div>
+                                        </td>
+                                    )}
+                                    {enabledVis.ccv && (
+                                        <td className="px-0 py-1 border-r border-slate-800/30">
+                                            <div className="w-[180px] h-[180px] bg-black border-x border-slate-800 overflow-hidden">
+                                                {item.ccvPreviewUrl ? <img src={item.ccvPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                            </div>
+                                        </td>
+                                    )}
+                                    {enabledVis.gabor && (
+                                        <td className="px-0 py-1 border-r border-slate-800/30">
+                                            <div className="w-[180px] h-[180px] bg-black border-x border-slate-800 overflow-hidden">
+                                                {item.gaborPreviewUrl ? <img src={item.gaborPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                            </div>
+                                        </td>
+                                    )}
+                                    {enabledVis.lbp && (
+                                        <td className="px-0 py-1 border-r border-slate-800/30">
+                                            <div className="w-[180px] h-[180px] bg-black border-x border-slate-800 overflow-hidden">
+                                                {item.lbpPreviewUrl ? <img src={item.lbpPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                            </div>
+                                        </td>
+                                    )}
+                                    {enabledVis.cellColor && (
+                                        <td className="px-0 py-1 border-r border-slate-800/30">
+                                            <div className="w-[180px] h-[180px] bg-black border-x border-slate-800 overflow-hidden">
+                                                {item.cellColorPreviewUrl ? <img src={item.cellColorPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                            </div>
+                                        </td>
+                                    )}
+                                    {enabledVis.hu && (
+                                        <td className="px-0 py-1">
+                                            <div className="w-[180px] h-[180px] bg-black border-l border-slate-800 overflow-hidden">
+                                                {item.huPreviewUrl ? <img src={item.huPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                            </div>
+                                        </td>
+                                    )}
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            )}
         </Card>
     );
 };

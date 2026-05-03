@@ -1,5 +1,5 @@
-from .schema import HealthResponse
-from ...core.config import get_settings
+from ..schemas.health import HealthResponse
+from ..core.config import get_settings
 
 class HealthService:
     def __init__(self):

@@ -10,8 +10,8 @@ sys.path.append(str(Path(__file__).parent))
 from .core.config import get_settings
 from .core.logging import setup_logging, get_logger
 from .db.session import init_db
-from .modules.health.router import router as health_router
-from .modules.images.router import router as images_router
+from .routers.health import router as health_router
+from .routers.image import router as images_router
 
 logger = get_logger(__name__)
 

@@ -20,12 +20,22 @@ const useImageStore = create((set, get) => ({
 
     // Similarity state
     similarityResults: [],
+    gtResults: [], // Added for comparison mode
     queryImageFeatures: null,
     queryImagePreviewUrl: null,
     similarityLoading: false,
     similarityError: null,
     topK: parseInt(import.meta.env.VITE_DEFAULT_TOPK) || 5,
     metric: 'cosine', // 'cosine' | 'l2'
+
+    // Evaluation state
+    evaluationData: null,
+    evaluationAllData: {},
+    evaluationLoading: false,
+    evaluationError: null,
+    isOptimizing: false,
+    setIsOptimizing: (val) => set({ isOptimizing: val }),
+    currentWeights: null,
 
     // Global sync scroll position
     syncScrollLeft: 0,
@@ -95,21 +105,26 @@ const useImageStore = create((set, get) => ({
     /**
      * Find similar images
      */
-    searchImages: async (file, limit = 5) => {
+    searchImages: async (file, limit = 5, searchSettings = null) => {
         const previewUrl = URL.createObjectURL(file);
         set({ similarityLoading: true, similarityError: null, similarityResults: [], queryImageFeatures: null, queryImagePreviewUrl: previewUrl });
 
         try {
             const formData = new FormData();
             formData.append('file', file);
+            formData.append('limit', limit);
+            if (searchSettings) {
+                formData.append('search_settings', JSON.stringify(searchSettings));
+            }
 
-            const searchUrl = `${API_BASE_URL}/api/images/search?limit=${limit}`;
+            const searchUrl = `${API_BASE_URL}/api/images/search`;
             console.log('Fetching:', searchUrl);
 
             const response = await fetch(searchUrl, {
                 method: 'POST',
                 body: formData
             });
+
 
             if (!response.ok) {
                 throw new Error(`Search failed: ${response.statusText}`);
@@ -129,8 +144,14 @@ const useImageStore = create((set, get) => ({
                 histogramPreviewUrl: item.histogram_vis_path ? `${API_BASE_URL}${item.histogram_vis_path}` : null,
             }));
 
+            const gtResultsWithPreviews = data.gt_results ? data.gt_results.map(item => ({
+                ...item,
+                previewUrl: (item.url || item.file_path) ? `${API_BASE_URL}${item.url || item.file_path}` : null,
+            })) : [];
+
             set({ 
                 similarityResults: resultsWithPreviews, 
+                gtResults: gtResultsWithPreviews,
                 queryImageFeatures: data.query_image,
                 similarityLoading: false 
             });
@@ -421,6 +442,61 @@ const useImageStore = create((set, get) => ({
         set((state) => ({
             toasts: state.toasts.filter(toast => toast.id !== id),
         }));
+    },
+
+    /**
+     * Evaluation and Optimization
+     */
+    fetchEvaluation: async (gt = 'clip') => {
+        set({ evaluationLoading: true, evaluationError: null });
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/images/evaluation?gt=${gt}`);
+            if (!response.ok) throw new Error(`Failed to fetch evaluation results for ${gt}`);
+            const data = await response.json();
+            set({ evaluationData: data, evaluationLoading: false });
+        } catch (error) {
+            set({ evaluationError: error.message, evaluationLoading: false });
+        }
+    },
+
+    fetchAllEvaluations: async () => {
+        set({ evaluationLoading: true, evaluationError: null });
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/images/evaluation-all`);
+            if (!response.ok) throw new Error('Failed to fetch all evaluation results');
+            const data = await response.json();
+            set({ evaluationAllData: data, evaluationLoading: false });
+        } catch (error) {
+            set({ evaluationError: error.message, evaluationLoading: false });
+        }
+    },
+
+    triggerOptimization: async (gt = 'all', trials = 50, allowNegative = false, excludeEmbeddings = false) => {
+        set({ isOptimizing: true });
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/images/optimize?gt=${gt}&trials=${trials}&allow_negative=${allowNegative}&exclude_embeddings=${excludeEmbeddings}`, {
+                method: 'POST'
+            });
+            if (!response.ok) throw new Error('Failed to start optimization');
+            get().addToast('success', `Optimization for ${gt} started in the background.`);
+        } catch (error) {
+            get().addToast('error', error.message);
+            set({ isOptimizing: false });
+        }
+    },
+
+    fetchWeights: async () => {
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/images/weights`);
+            if (!response.ok) throw new Error('Failed to fetch weights');
+            const data = await response.json();
+            set({ currentWeights: data });
+            return data;
+        } catch (error) {
+            console.error('Failed to fetch weights:', error);
+            // Default empty weights
+            set({ currentWeights: {} });
+        }
     },
 }));
 

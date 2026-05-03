@@ -12,6 +12,7 @@ const Sidebar = () => {
     const navItems = [
         { to: '/import', icon: Upload, label: 'Import' },
         { to: '/search', icon: Search, label: 'Search' },
+        { to: '/evaluate', icon: GitCompare, label: 'Evaluate' },
     ];
 
     return (

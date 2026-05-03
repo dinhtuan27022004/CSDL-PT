@@ -22,7 +22,7 @@ def init_db():
     try:
         from .base import Base
         # Import models here to ensure they are registered with Base.metadata before create_all
-        from ..modules.images.model import ImageMetadata
+        from ..models.image import ImageMetadata
         
         with engine.connect() as conn:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))

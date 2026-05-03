@@ -22,10 +22,18 @@ class Settings(BaseSettings):
     api_description: str = "Upload images and search for similar ones (Modular Architecture)"
     api_version: str = "2.2.0"
     
-    # OpenRouter
+    # AI & Models
+    hf_token: str = ""
     openrouter_api_key: str = ""
     llm_vision_model: str = "google/gemini-2.0-flash-001"
+    llm_vision_local_model: str = "microsoft/Florence-2-large"
     llm_embedding_model: str = "BAAI/bge-m3"
+    clip_model_name: str = "openai/clip-vit-large-patch14"
+    dinov2_model_name: str = "facebook/dinov2-giant"
+    siglip_model_name: str = "google/siglip-base-patch16-224"
+    convnext_model_name: str = "facebook/convnextv2-base-1k-224"
+    efficientnet_model_name: str = "google/efficientnet-b7"
+    sam_model_name: str = "facebook/sam-vit-base"
     
     # CORS
     cors_origins: List[str] = ["http://localhost:5173"]
@@ -34,6 +42,8 @@ class Settings(BaseSettings):
     base_dir: Path = Path(__file__).parent.parent.parent
     uploads_dir: Path = base_dir / "uploads"
     visualizations_dir: Path = base_dir / "visualizations"
+    weights_file: Path = base_dir / "weights.json"
+    evaluation_results_file: Path = base_dir / "evaluation_results.json"
     
     # Logging
     log_level: str = "INFO"

@@ -88,6 +88,8 @@ const ImportForm = () => {
                         ref={inputRef}
                         type="file"
                         multiple
+                        webkitdirectory=""
+                        directory=""
                         accept="image/*"
                         onChange={handleChange}
                         className="hidden"
