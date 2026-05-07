@@ -217,8 +217,22 @@ class WeightOptimizer:
                 if i != j and labels[j] == l1:
                     self.y_true[i, j] = 1
                     
-        self.train_idx = np.arange(n)
-        self.test_idx = np.arange(n)
+        # Filter indices to only those present in ground truth clusters (approx 500 images)
+        query_indices = []
+        for i, img in enumerate(self.store.images):
+            # If the image has a label, it belongs to one of the clusters
+            if os.path.basename(img.file_name) in file_to_label:
+                query_indices.append(i)
+        
+        if not query_indices:
+            logger.warning("No images from ground truth found in store. Using all images as fallback.")
+            self.train_idx = np.arange(n)
+            self.test_idx = np.arange(n)
+        else:
+            logger.info(f"Filtered to {len(query_indices)} query images for evaluation.")
+            self.train_idx = np.array(query_indices)
+            self.test_idx = np.array(query_indices)
+            
         self.trial_history = [] # Reset history for new optimization run
         return True
 
@@ -294,7 +308,7 @@ class WeightOptimizer:
             
             # Penalize using many features
             sparsity_penalty = (n_active / len(self.feature_names)) * alpha
-            return m5 - sparsity_penalty
+            return m5
 
         def callback(study, trial):
             if study.best_trial.number == trial.number:

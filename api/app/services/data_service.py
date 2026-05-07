@@ -208,13 +208,46 @@ class DataService:
                 candidates.remove(best_key)
             else: break
                 
-        test_gt = {str(i+1): full_gt[key] for i, key in enumerate(selected_keys)}
+        # 5. PHYSICAL EXPORT: Create folders and copy images
+        import shutil
+        purify_dir = Path("C:/PTIT/2026/CSDL-PT/purify_data")
+        
+        # Clean or ensure directory exists
+        if purify_dir.exists():
+            shutil.rmtree(purify_dir) # Start fresh each time
+        purify_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"Physically exporting 50 clusters to {purify_dir}...")
+        
+        for i, key in enumerate(selected_keys):
+            cluster_id = f"cluster_{i+1:02d}"
+            cluster_path = purify_dir / cluster_id
+            cluster_path.mkdir(parents=True, exist_ok=True)
+            
+            # Get filenames from the cluster
+            filenames = full_gt[key]
+            for fname in filenames:
+                source_path = self.settings.uploads_dir / fname
+                dest_path = cluster_path / fname
+                
+                if source_path.exists():
+                    try:
+                        shutil.copy2(source_path, dest_path)
+                    except Exception as e:
+                        logger.error(f"Failed to copy {fname}: {e}")
+                else:
+                    logger.warning(f"Source file not found: {source_path}")
+
+        # 6. Save JSON and update cache
         test_path = self.settings.base_dir / "ground_truth_2.json"
+        test_gt = {str(i+1): full_gt[key] for i, key in enumerate(selected_keys)}
+        
         with open(test_path, "w") as f:
             json.dump(test_gt, f, indent=2)
             
         # FORCE recompute stats cache for ground_truth_2.json
         stats = self.get_stats_for_file(db, "ground_truth_2.json", force_recompute=True)
+        
         return {
             "message": "Successfully extracted 50 diverse clusters and updated cache",
             "path": str(test_path),
