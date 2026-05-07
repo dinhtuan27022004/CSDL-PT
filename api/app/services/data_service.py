@@ -20,7 +20,8 @@ class DataService:
         self.settings = get_settings()
 
     def get_stats_for_file(self, db: Session, filename: str):
-        """Calculate comprehensive statistics for a given ground truth file"""
+        """Calculate comprehensive statistics using in-memory NumPy lookups for speed"""
+        import numpy as np
         path = self.settings.base_dir / filename
         if not path.exists():
             return None
@@ -31,39 +32,57 @@ class DataService:
         if not gt_data:
             return None
 
-        # 1. Get all images from DB to have the full universe for coverage calculation
+        # 1. Fetch all images once
         all_db_images = self.repository.get_all(db, limit=50000)
         n_total = len(all_db_images)
         
+        # Build map and collect vectors
+        img_map = {os.path.basename(img.file_name): i for i, img in enumerate(all_db_images)}
+        filenames = [os.path.basename(img.file_name) for img in all_db_images]
+        
+        vectors = []
+        valid_indices = []
+        for i, img in enumerate(all_db_images):
+            if img.dreamsim_vector is not None:
+                vectors.append(img.dreamsim_vector)
+                valid_indices.append(i)
+        
+        if not vectors: return None
+        
+        # 2. Normalize vectors for similarity calculation
+        X = np.array(vectors, dtype=np.float32)
+        X_norm = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-9)
+        
+        # Map original index to normalized matrix index
+        orig_to_norm = {orig_idx: norm_idx for norm_idx, orig_idx in enumerate(valid_indices)}
+
         sim_distribution = [0] * 10
         avg_sims = []
         all_appearances = []
         
-        # Optimization: Build a map of file_name -> ImageMetadata
-        img_map = {os.path.basename(img.file_name): img for img in all_db_images}
+        logger.info(f"Analyzing {filename} with {len(gt_data)} clusters...")
         
-        class MockSettings:
-            mode = "manual"
-            weights = {"dreamsim": 1.0}
-        search_settings = MockSettings()
-
-        logger.info(f"Calculating stats for {filename}...")
         for i, (query_fname, matches) in enumerate(gt_data.items()):
             if not matches: continue
             
+            # The query is the first match in our GT format
             q_name = matches[0]
-            q_meta = img_map.get(q_name)
-            if not q_meta: continue
+            q_idx = img_map.get(q_name)
+            if q_idx is None or q_idx not in orig_to_norm: continue
             
-            # Synchronous search
-            results = self.repository.search(db, q_meta, limit=50, search_settings=search_settings)
+            q_vec_idx = orig_to_norm[q_idx]
+            q_vec = X_norm[q_vec_idx]
             
-            score_map = {os.path.basename(r[0].file_name): float(r[1]) for r in results}
-            
+            # Calculate similarity to all matches in this cluster
             cluster_sims = []
             for m in matches:
                 all_appearances.append(m)
-                sim = score_map.get(m, 0.5) 
+                m_idx = img_map.get(m)
+                if m_idx is not None and m_idx in orig_to_norm:
+                    m_vec = X_norm[orig_to_norm[m_idx]]
+                    sim = float(np.dot(q_vec, m_vec))
+                else:
+                    sim = 0.5
                 cluster_sims.append(sim)
                 
             avg_cluster_sim = sum(cluster_sims) / len(cluster_sims)
@@ -71,11 +90,10 @@ class DataService:
             bin_idx = min(int(avg_cluster_sim * 10), 9)
             sim_distribution[bin_idx] += 1
             
-            # Yield control back to the system periodically
-            if i % 10 == 0:
-                time.sleep(0.01)
+            if i % 1000 == 0 and i > 0:
+                time.sleep(0.001) # Yield slightly
 
-        # Analysis
+        # 3. Analyze Coverage & Hubs
         counts = Counter(all_appearances)
         hub_images = [{"name": name, "count": count} for name, count in counts.most_common(10)]
         unique_appearing = len(counts)
@@ -103,29 +121,46 @@ class DataService:
         }
 
     def generate_ground_truth(self, db: Session):
-        """Generate ground_truth.json using dreamsim as standard for all images"""
+        """Generate ground_truth.json using in-memory NumPy matrix for speed"""
+        import numpy as np
+        
         images = self.repository.get_all(db, limit=50000)
         if not images:
             return {"message": "No images in database", "count": 0}
             
         n = len(images)
-        logger.info(f"Generating ground truth for {n} images using DreamSim...")
+        logger.info(f"Generating optimized ground truth for {n} images using NumPy matrix...")
         
-        gt_dict = {}
-        class MockSettings:
-            mode = "manual"
-            weights = {"dreamsim": 1.0}
-        search_settings = MockSettings()
-
-        for i, img in enumerate(images):
-            results = self.repository.search(db, img, limit=10, search_settings=search_settings)
-            gt_dict[str(i + 1)] = [os.path.basename(res[0].file_name) for res in results]
-            if (i + 1) % 100 == 0:
-                logger.info(f"Progress: {i+1}/{n}")
+        # 1. Collect all DreamSim vectors
+        vectors = []
+        filenames = []
+        for img in images:
+            if img.dreamsim_vector is not None:
+                vectors.append(img.dreamsim_vector)
+                filenames.append(os.path.basename(img.file_name))
+        
+        if not vectors:
+            return {"message": "No DreamSim vectors found", "count": 0}
             
-            # Periodically yield to other threads
-            if i % 5 == 0:
-                time.sleep(0.01)
+        # 2. Convert to NumPy array and Normalize for Cosine Similarity
+        X = np.array(vectors, dtype=np.float32)
+        norms = np.linalg.norm(X, axis=1, keepdims=True) + 1e-9
+        X_norm = X / norms
+        
+        # 3. Calculate NxN Similarity Matrix (Dot product of normalized vectors = Cosine Similarity)
+        # Result is NxN where result[i, j] is similarity between image i and j
+        logger.info("Calculating similarity matrix...")
+        sim_matrix = np.dot(X_norm, X_norm.T)
+        
+        # 4. Extract Top 10 for each image
+        gt_dict = {}
+        for i in range(len(filenames)):
+            # Get indices of top 10 similarities
+            top_indices = np.argsort(sim_matrix[i])[::-1][:10]
+            gt_dict[str(i + 1)] = [filenames[idx] for idx in top_indices]
+            
+            if (i + 1) % 500 == 0:
+                logger.info(f"Assembled {i+1}/{len(filenames)} clusters")
 
         gt_path = self.settings.base_dir / "ground_truth.json"
         with open(gt_path, "w") as f:
@@ -134,7 +169,7 @@ class DataService:
         # Return stats synchronously
         stats = self.get_stats_for_file(db, "ground_truth.json")
         return {
-            "message": f"Successfully generated ground truth for {n} images",
+            "message": f"Successfully generated ground truth for {len(filenames)} images (Optimized)",
             **stats
         }
 
