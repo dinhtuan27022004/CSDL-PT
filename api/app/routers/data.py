@@ -53,6 +53,7 @@ def get_stats(
 ):
     """Get statistics for a specific ground truth file (Runs in threadpool)"""
     filename = "ground_truth.json" if mode == "full" else "ground_truth_2.json"
+    logger.info(f"--- FETCHING STATS FOR MODE: {mode}, FILENAME: {filename} ---")
     try:
         result = service.get_stats_for_file(db, filename)
         if result is None:

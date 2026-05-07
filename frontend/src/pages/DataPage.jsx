@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Database, Zap, FileJson, CheckCircle, AlertCircle, Loader2, BarChart3, TrendingUp, PieChart as PieIcon, Layers } from 'lucide-react';
 import axios from 'axios';
 import { 
@@ -26,16 +26,24 @@ const DataPage = () => {
     const [diverseResult, setDiverseResult] = useState(null);
     const [viewMode, setViewMode] = useState('full'); // full, diverse
 
+    // Auto-fetch stats on mount
+    useEffect(() => {
+        fetchStats('full');
+    }, []);
+
     const fetchStats = async (mode) => {
+        console.log(`🚀 FETCHING STATS FOR: ${mode} at ${new Date().toLocaleTimeString()}`);
+        setStatus('loading');
         try {
-            const response = await axios.get(`http://localhost:8000/api/data/stats?mode=${mode}`);
+            const url = `http://localhost:8000/api/data/stats?mode=${mode}&_t=${Date.now()}`;
+            console.log(`📡 Calling API: ${url}`);
+            const response = await axios.get(url);
+            console.log('✅ API RESPONSE:', response.data);
             setResult(response.data);
             setStatus('success');
         } catch (error) {
-            console.error('Failed to fetch stats:', error);
-            if (mode === 'diverse') {
-                setViewMode('full');
-            }
+            console.error('❌ API FAILED:', error);
+            setStatus('error');
         }
     };
 
@@ -193,6 +201,24 @@ const DataPage = () => {
                     </div>
                 )}
 
+                {status === 'error' && (
+                    <div className="bg-red-500/10 backdrop-blur-xl border border-red-500/20 p-12 rounded-3xl shadow-2xl flex flex-col justify-center items-center text-center space-y-6">
+                        <div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center border border-red-500/30">
+                            <AlertCircle className="w-10 h-10 text-red-500" />
+                        </div>
+                        <div className="space-y-2">
+                            <h3 className="text-xl font-bold text-white">Failed to load {viewMode} statistics</h3>
+                            <p className="text-slate-500 max-w-xs">Make sure the ground truth file exists and is valid.</p>
+                        </div>
+                        <button 
+                            onClick={() => fetchStats(viewMode)}
+                            className="px-8 py-3 bg-red-600 hover:bg-red-500 text-white rounded-2xl font-bold transition-all"
+                        >
+                            Retry
+                        </button>
+                    </div>
+                )}
+
                 {status === 'loading' && (
                     <div className="bg-slate-900/50 backdrop-blur-xl border border-slate-800 p-12 rounded-3xl shadow-2xl flex flex-col justify-center items-center text-center space-y-8">
                         <div className="w-24 h-24 relative">
@@ -212,6 +238,15 @@ const DataPage = () => {
                 {status === 'success' && (
                     <div className="space-y-8 animate-in zoom-in-95 duration-500">
                         {/* Distribution & Coverage Row */}
+                        <div className="flex items-center justify-between px-2">
+                            <div className="flex items-center gap-3">
+                                <FileJson className="w-4 h-4 text-slate-500" />
+                                <span className="text-lg font-bold text-red-500 uppercase tracking-tighter">
+                                    DEBUG SOURCE: {result?.source} • TIME: {new Date(result?.timestamp * 1000).toLocaleTimeString()}
+                                </span>
+                            </div>
+                        </div>
+
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                             <div className="bg-slate-900/50 backdrop-blur-xl border border-slate-800 p-6 rounded-3xl">
                                 <div className="flex items-center justify-between mb-6">
