@@ -8,7 +8,11 @@ settings = get_settings()
 
 engine = create_engine(
     settings.database_url, 
-    echo=False
+    echo=False,
+    pool_size=20,          # Increase base pool from 5 to 20
+    max_overflow=30,       # Allow up to 30 extra connections
+    pool_timeout=60,       # Wait up to 60s for a connection
+    pool_recycle=1800      # Recycle connections every 30 mins
 )
 
 SessionLocal = sessionmaker(

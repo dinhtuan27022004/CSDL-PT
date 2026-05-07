@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     api_version: str = "2.2.0"
     
     # AI & Models
-    hf_token: str = ""
+    hf_token: str = "" # Use HF_TOKEN in .env
     openrouter_api_key: str = ""
     llm_vision_model: str = "google/gemini-2.0-flash-001"
     llm_vision_local_model: str = "microsoft/Florence-2-large"

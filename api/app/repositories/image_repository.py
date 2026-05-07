@@ -5,11 +5,28 @@ from typing import List, Optional, Tuple, Any
 from ..models.image import ImageMetadata
 from ..core.logging import get_logger
 from ..core.config import get_settings
+from ..core.similarity_specs import get_all_feature_specs
 import math
 import os
 import json
 
 logger = get_logger(__name__)
+
+# Mapping from feature names to actual ImageMetadata column names if different
+COLUMN_MAP = {
+    "hog": "hog_vector", "hu_moments": "hu_moments_vector", "lbp": "lbp_vector",
+    "color_moments": "color_moments_vector", "gabor": "gabor_vector", "ccv": "ccv_vector",
+    "zernike": "zernike_vector", "geo": "geo_vector", "tamura": "tamura_vector",
+    "edge_orientation": "edge_orientation_vector", "glcm": "glcm_vector", "wavelet": "wavelet_vector",
+    "correlogram": "correlogram_vector", "ehd": "ehd_vector", "cld": "cld_vector",
+    "spm": "spm_vector", "saliency": "saliency_vector", "semantic": "llm_embedding",
+    "dreamsim": "dreamsim_vector", "dominant_color": "dominant_color_vector",
+    "entity": "entities"
+}
+
+# Add cell vector mapping
+for space in ["rgb", "hsv", "lab", "ycrcb", "hls", "xyz", "gray"]:
+    COLUMN_MAP[f"cell_{space}"] = f"cell_{space}_vector"
 
 class ImageRepository:
     """Repository for image metadata database operations"""
@@ -74,155 +91,91 @@ class ImageRepository:
             .all()
 
 
+    def _get_similarity_map(self, query_metadata: ImageMetadata) -> Dict[str, Any]:
+        """Builds a map of SQLAlchemy expressions for all similarity components using central specs"""
+        specs = get_all_feature_specs()
+        sim_map = {}
+
+        def safe_sim(expr):
+            return func.coalesce(func.least(1.0, func.greatest(0.0, expr)), 0.0)
+
+        for name, metric in specs.items():
+            col_name = COLUMN_MAP.get(name, name)
+            col = getattr(ImageMetadata, col_name)
+            query_val = getattr(query_metadata, col_name)
+
+            if metric == "scalar":
+                sim_map[name] = safe_sim(1.0 - func.greatest(0.0, func.abs(col - query_val)))
+            
+            elif metric == "sharpness":
+                diff = func.abs(col - query_val)
+                denom = func.abs(col + query_val) + 1e-7
+                sim_map[name] = safe_sim(1.0 - func.greatest(0.0, diff / denom))
+            
+            elif metric == "cosine":
+                # For vectors, we use cosine distance from PGVector
+                sim_map[name] = safe_sim(1.0 - func.greatest(0.0, func.coalesce(col.cosine_distance(query_val), 1.0)))
+            
+            elif metric == "l2_color":
+                max_d = math.sqrt(255*255*3)
+                sim_map[name] = safe_sim(1.0 - col.l2_distance(query_val) / max_d)
+            
+            elif metric == "l2_cell":
+                space = name.split("_")[1] if "_" in name else "rgb"
+                max_d = math.sqrt(255*255*3*16) if space != "gray" else math.sqrt(255*255*16)
+                sim_map[name] = safe_sim(1.0 - func.greatest(0.0, func.coalesce(col.l2_distance(query_val), 0.0)) / max_d)
+            
+            elif metric == "category":
+                q_cat = (query_val or "General").lower()
+                sim_map[name] = case((func.lower(col) == q_cat, 1.0), else_=0.0)
+            
+            elif metric == "entity":
+                query_ents = list(set([e.lower() for e in (query_val or [])]))
+                if query_ents:
+                    intersection = sum([case((col.cast(Text).ilike(f'%"{e}"%'), 1.0), else_=0.0) for e in query_ents])
+                    union = len(query_ents) + func.jsonb_array_length(col) - intersection
+                    sim_map[name] = safe_sim(intersection / func.greatest(1.0, union))
+                else:
+                    sim_map[name] = literal(0.0)
+
+        return sim_map
+
+    def _apply_weights(self, sim_map: Dict[str, Any], weights: Dict[str, float]) -> Any:
+        """Applies weights to similarity expressions and returns the total similarity expression"""
+        if not weights:
+            # Fallback: Equal weights
+            default_w = 1.0 / len(sim_map)
+            return sum([expr * default_w for expr in sim_map.values()])
+            
+        weighted_components = []
+        for name, expr in sim_map.items():
+            w = weights.get(name, 0.0)
+            if w != 0:
+                weighted_components.append(expr * w)
+        
+        return sum(weighted_components) if weighted_components else literal(0.0)
+
     def search(self, db: Session, query_metadata: ImageMetadata, limit: int = 10, search_settings: Any = None) -> List[Any]:
         """Perform dynamic weighted similarity search based on enabled components"""
         try:
-            # Helper to make expressions NaN-proof and range-bound [0, 1]
-            def safe_sim(expr):
-                # Using coalesce and least/greatest is enough since we prevent 
-                # negative sqrt inputs at the source.
-                return func.coalesce(
-                    func.least(1.0, func.greatest(0.0, expr)), 
-                    0.0
-                )
+            # 1. Get base similarity expressions
+            sim_map = self._get_similarity_map(query_metadata)
 
-            # 1. Scalar Similarities
-            brightness_sim = safe_sim(1.0 - func.greatest(0.0, func.abs(ImageMetadata.brightness - query_metadata.brightness)))
-            contrast_sim = safe_sim(1.0 - func.greatest(0.0, func.abs(ImageMetadata.contrast - query_metadata.contrast)))
-            saturation_sim = safe_sim(1.0 - func.greatest(0.0, func.abs(ImageMetadata.saturation - query_metadata.saturation)))
-            edge_density_sim = safe_sim(1.0 - func.greatest(0.0, func.abs(ImageMetadata.edge_density - query_metadata.edge_density)))
-            
-            sharp_diff = func.abs(ImageMetadata.sharpness - query_metadata.sharpness)
-            sharp_denom = func.abs(ImageMetadata.sharpness + query_metadata.sharpness) + 1e-7
-            sharpness_sim = safe_sim(1.0 - func.greatest(0.0, sharp_diff / sharp_denom))
+            # 2. Determine Weights based on Mode
+            mode = getattr(search_settings, 'mode', 'optimized')
+            logger.info(f"--- Search Mode: {mode} ---")
 
-            # Build complete sim_map with all available features
-            sim_map = {
-                "brightness": brightness_sim,
-                "contrast": contrast_sim,
-                "saturation": saturation_sim,
-                "edge_density": edge_density_sim,
-                "sharpness": sharpness_sim,
-            }
+            if mode == "manual":
+                weights = getattr(search_settings, 'weights', {})
+            elif mode == "equal":
+                weights = None # Triggers equal weights in _apply_weights
+            else: # optimized
+                weights = self._load_weights()
 
-            # 2. Color Space Similarities
-            for space in ["rgb", "hsv", "lab", "ycrcb", "hls", "xyz", "gray"]:
-                for method in ["std", "interp", "gauss"]:
-                    # Hist
-                    h_col = f"{space}_hist_{method}"
-                    sim_map[h_col] = safe_sim(1.0 - func.greatest(0.0, getattr(ImageMetadata, h_col).cosine_distance(getattr(query_metadata, h_col))))
-                    # CDF
-                    c_col = f"{space}_cdf_{method}"
-                    sim_map[c_col] = safe_sim(1.0 - func.greatest(0.0, getattr(ImageMetadata, c_col).cosine_distance(getattr(query_metadata, c_col))))
-                    # Joint (except gray)
-                    if space != "gray":
-                        j_col = f"joint_{space}_{method}"
-                        sim_map[j_col] = safe_sim(1.0 - func.greatest(0.0, getattr(ImageMetadata, j_col).cosine_distance(getattr(query_metadata, j_col))))
-                
-                # Cell Color (L2)
-                cell_col = f"cell_{space}_vector"
-                max_dist = math.sqrt(255*255*3*16) if space != "gray" else math.sqrt(255*255*16)
-                sim_map[f"cell_{space}"] = safe_sim(1.0 - func.greatest(0.0, func.coalesce(getattr(ImageMetadata, cell_col).l2_distance(getattr(query_metadata, cell_col)), 0.0)) / max_dist)
+            # 3. Build Total Similarity Expression
+            total_sim = self._apply_weights(sim_map, weights)
 
-            # 3. Traditional Features
-            sim_map.update({
-                "hog": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.hog_vector.cosine_distance(query_metadata.hog_vector))),
-                "hu_moments": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.hu_moments_vector.cosine_distance(query_metadata.hu_moments_vector))),
-                "lbp": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.lbp_vector.cosine_distance(query_metadata.lbp_vector))),
-                "color_moments": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.color_moments_vector.cosine_distance(query_metadata.color_moments_vector))),
-                "gabor": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.gabor_vector.cosine_distance(query_metadata.gabor_vector))),
-                "ccv": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.ccv_vector.cosine_distance(query_metadata.ccv_vector))),
-                "zernike": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.zernike_vector.cosine_distance(query_metadata.zernike_vector))),
-                "geo": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.geo_vector.cosine_distance(query_metadata.geo_vector))),
-                "tamura": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.tamura_vector.cosine_distance(query_metadata.tamura_vector))),
-                "edge_orientation": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.edge_orientation_vector.cosine_distance(query_metadata.edge_orientation_vector))),
-                "glcm": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.glcm_vector.cosine_distance(query_metadata.glcm_vector))),
-                "wavelet": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.wavelet_vector.cosine_distance(query_metadata.wavelet_vector))),
-                "correlogram": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.correlogram_vector.cosine_distance(query_metadata.correlogram_vector))),
-                "ehd": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.ehd_vector.cosine_distance(query_metadata.ehd_vector))),
-                "cld": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.cld_vector.cosine_distance(query_metadata.cld_vector))),
-                "spm": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.spm_vector.cosine_distance(query_metadata.spm_vector))),
-                "saliency": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.saliency_vector.cosine_distance(query_metadata.saliency_vector))),
-            })
-
-            # 4. Semantic
-            sim_map.update({
-                "semantic": safe_sim(1.0 - func.greatest(0.0, func.coalesce(ImageMetadata.llm_embedding.cosine_distance(query_metadata.llm_embedding), 1.0))),
-                "dreamsim": safe_sim(1.0 - func.greatest(0.0, func.coalesce(ImageMetadata.dreamsim_vector.cosine_distance(query_metadata.dreamsim_vector), 1.0))),
-            })
-            
-            # 5. Discrete / Dominant Color
-            sim_map["dominant_color"] = safe_sim(1.0 - ImageMetadata.dominant_color_vector.l2_distance(query_metadata.dominant_color_vector) / (math.sqrt(255*255*3)))
-            
-            query_category = (query_metadata.category or "General").lower()
-            sim_map["category"] = case((func.lower(ImageMetadata.category) == query_category, 1.0), else_=0.0)
-            
-            query_entities = list(set([e.lower() for e in (query_metadata.entities or [])]))
-            if query_entities:
-                # Count matches using contains (Intersection)
-                intersection_size = sum([
-                    case((ImageMetadata.entities.cast(Text).ilike(f'%"{e}"%'), 1.0), else_=0.0)
-                    for e in query_entities
-                ])
-                
-                # Jaccard = Intersection / (Size_Query + Size_DB - Intersection)
-                db_size = func.jsonb_array_length(ImageMetadata.entities)
-                union_size = len(query_entities) + db_size - intersection_size
-                
-                sim_map["entity"] = safe_sim(intersection_size / func.greatest(1.0, union_size))
-            else:
-                sim_map["entity"] = literal(0.0)
-
-            if not sim_map:
-                total_sim = literal(0.0)
-            else:
-                # Priority and Mode handling:
-                # 1. manual: Use weights provided in settings. If empty, use equal.
-                # 2. equal: Force equal weights.
-                # 3. optimized: Load from weights.json. Fallback to equal if missing.
-                
-                weights = None
-                mode = getattr(search_settings, 'mode', 'optimized')
-                logger.info(f"--- Search Mode: {mode} ---")
-                
-                # Debug: Check if query metadata has features
-                logger.info(f"Query Image Features Sample - Brightness: {query_metadata.brightness}, Contrast: {query_metadata.contrast}")
-
-                if mode == "manual":
-                    weights = getattr(search_settings, 'weights', None)
-                    logger.info(f"Manual weights keys: {list(weights.keys()) if weights else 'None'}")
-                elif mode == "equal":
-                    weights = {} # Triggers equal weights fallback
-                    logger.info("Using Equal Weights mode")
-                else: # optimized
-                    weights = self._load_weights()
-                    logger.info(f"Optimized weights keys: {list(weights.keys()) if weights else 'None'}")
-                
-                weighted_components = []
-                weight_sum = 0.0
-                
-                if not weights:
-                    # Case: equal weights
-                    default_w = 1.0 / len(sim_map)
-                    logger.info(f"No weights found, using equal weight: {default_w:.4f} for {len(sim_map)} features")
-                    for name, sim_expr in sim_map.items():
-                        weighted_components.append(sim_expr * default_w)
-                        weight_sum += default_w
-                else:
-                    logger.info(f"Applying weights to {len(sim_map)} available features")
-                    for name, sim_expr in sim_map.items():
-                        w = weights.get(name, 0.0)
-                        if w != 0:
-                            weighted_components.append(sim_expr * w)
-                            weight_sum += w
-                    logger.info(f"Total active components: {len(weighted_components)}, Total Weight Sum: {weight_sum:.4f}")
-                
-                if weighted_components:
-                    total_sim = sum(weighted_components)
-                else:
-                    logger.error("CRITICAL: No weighted components! Total similarity will be 0.")
-                    total_sim = literal(0.0)
-
+            # 4. Execute Query
             results_query = db.query(
                 ImageMetadata,
                 cast(total_sim, Float).label('similarity')

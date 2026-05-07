@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/optimization", tags=["optimization"])
 logger = get_logger(__name__)
 
 @router.get("/evaluation")
-async def get_evaluation():
+def get_evaluation():
     filename = "evaluation_results.json"
     if not os.path.exists(filename):
         raise HTTPException(status_code=404, detail="Evaluation results not found. Please run optimization first.")
@@ -23,7 +23,7 @@ async def get_evaluation():
         raise HTTPException(status_code=500, detail=f"Failed to read evaluation results: {str(e)}")
 
 @router.post("/optimize")
-async def trigger_optimization(
+def trigger_optimization(
     background_tasks: BackgroundTasks,
     trials: int = 50, 
     allow_negative: bool = False,
@@ -31,10 +31,11 @@ async def trigger_optimization(
 ):
     try:
         service = OptimizationService(db)
+        # BackgroundTasks works perfectly with synchronous run_optimization
         background_tasks.add_task(service.run_optimization, trials, allow_negative)
         
         return {
-            "message": "Optimization started in background using folder-based Ground Truth",
+            "message": "Optimization started in background",
             "trials": trials, 
             "allow_negative": allow_negative
         }
@@ -43,7 +44,7 @@ async def trigger_optimization(
         raise HTTPException(status_code=500, detail=f"Failed to start optimization: {str(e)}")
 
 @router.get("/weights")
-async def get_current_weights():
+def get_current_weights():
     settings = get_settings()
     if not os.path.exists(settings.weights_file):
         return {}

@@ -10,6 +10,7 @@ from ..models.image import ImageMetadata
 from ..core.config import get_settings
 from ..core.logging import get_logger
 from sklearn.metrics import average_precision_score, precision_recall_curve
+from ..core.similarity_specs import get_all_feature_specs
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -17,6 +18,31 @@ import seaborn as sns
 
 logger = get_logger(__name__)
 settings = get_settings()
+
+# Mapping from spec metrics to internal numpy metrics
+METRIC_MAP = {
+    "scalar": "scalar",
+    "sharpness": "sharpness",
+    "cosine": "cosine",
+    "l2_color": "l2_color",
+    "l2_cell": "l2_cell_color"
+}
+
+# Mapping from feature names to actual ImageMetadata column names if different
+COLUMN_MAP = {
+    "hog": "hog_vector", "hu_moments": "hu_moments_vector", "lbp": "lbp_vector",
+    "color_moments": "color_moments_vector", "gabor": "gabor_vector", "ccv": "ccv_vector",
+    "zernike": "zernike_vector", "geo": "geo_vector", "tamura": "tamura_vector",
+    "edge_orientation": "edge_orientation_vector", "glcm": "glcm_vector", "wavelet": "wavelet_vector",
+    "correlogram": "correlogram_vector", "ehd": "ehd_vector", "cld": "cld_vector",
+    "spm": "spm_vector", "saliency": "saliency_vector", "semantic": "llm_embedding",
+    "dreamsim": "dreamsim_vector", "dominant_color": "dominant_color_vector",
+    "category": "category", "entity": "entities"
+}
+
+# Add cell vector mapping
+for space in ["rgb", "hsv", "lab", "ycrcb", "hls", "xyz", "gray"]:
+    COLUMN_MAP[f"cell_{space}"] = f"cell_{space}_vector"
 
 def get_similarity_matrix(vectors: np.ndarray, metric: str = "cosine") -> np.ndarray:
     """Calculate N x N similarity matrix for a feature vector"""
@@ -97,7 +123,7 @@ class SharedFeatureStore:
             if self._is_loaded:
                 return True
                 
-            logger.info("Loading all features into Shared Feature Store...")
+            logger.info("Loading all features into Shared Feature Store using central specs...")
             self.images = self.db.query(ImageMetadata).all()
             if not self.images:
                 logger.error("No images found in database.")
@@ -105,77 +131,36 @@ class SharedFeatureStore:
             
             self.image_ids = [img.id for img in self.images]
             images = self.images
+            specs = get_all_feature_specs()
             
-            # 1. Scalars
-            scalars = {
-                "brightness": np.array([img.brightness or 0.0 for img in images]),
-                "contrast": np.array([img.contrast or 0.0 for img in images]),
-                "saturation": np.array([img.saturation or 0.0 for img in images]),
-                "edge_density": np.array([img.edge_density or 0.0 for img in images]),
-                "sharpness": np.array([img.sharpness or 0.0 for img in images]),
-            }
-            for name, vec in scalars.items():
-                self.feature_matrices[name] = get_similarity_matrix(vec, metric="sharpness" if name=="sharpness" else "scalar")
-
-            # 2. Color Space Features
-            for space in ["rgb", "hsv", "lab", "ycrcb", "hls", "xyz", "gray"]:
-                for method in ["std", "interp", "gauss"]:
-                    # Hist
-                    h_col = f"{space}_hist_{method}"
-                    h_vecs = [getattr(img, h_col) for img in images]
-                    h_vecs = [np.array(v) if v is not None else np.zeros(24 if space != "gray" else 8) for v in h_vecs]
-                    self.feature_matrices[h_col] = get_similarity_matrix(np.array(h_vecs), metric="cosine")
+            for name, metric_type in specs.items():
+                try:
+                    col_name = COLUMN_MAP.get(name, name)
                     
-                    # CDF
-                    c_col = f"{space}_cdf_{method}"
-                    c_vecs = [getattr(img, c_col) for img in images]
-                    c_vecs = [np.array(v) if v is not None else np.zeros(24 if space != "gray" else 8) for v in c_vecs]
-                    self.feature_matrices[c_col] = get_similarity_matrix(np.array(c_vecs), metric="cosine")
-                    
-                    if space != "gray":
-                        j_col = f"joint_{space}_{method}"
-                        j_vecs = [getattr(img, j_col) for img in images]
-                        j_vecs = [np.array(v) if v is not None else np.zeros(64) for v in j_vecs]
-                        self.feature_matrices[j_col] = get_similarity_matrix(np.array(j_vecs), metric="cosine")
-                
-                # Cell Color
-                cell_col_attr = f"cell_{space}_vector"
-                cell_vecs = [getattr(img, cell_col_attr) for img in images]
-                cell_vecs = [np.array(v) if v is not None else np.zeros(48 if space != "gray" else 16) for v in cell_vecs]
-                self.feature_matrices[f"cell_{space}"] = get_similarity_matrix(np.array(cell_vecs), metric="l2_cell_color")
-
-            # 3. Traditional Vectors
-            vector_cols = {
-                "hog": "hog_vector", "hu_moments": "hu_moments_vector", "lbp": "lbp_vector",
-                "color_moments": "color_moments_vector", "gabor": "gabor_vector", "ccv": "ccv_vector",
-                "zernike": "zernike_vector", "geo": "geo_vector", "tamura": "tamura_vector",
-                "edge_orientation": "edge_orientation_vector", "glcm": "glcm_vector", "wavelet": "wavelet_vector",
-                "correlogram": "correlogram_vector", "ehd": "ehd_vector", "cld": "cld_vector",
-                "spm": "spm_vector", "saliency": "saliency_vector", "semantic": "llm_embedding",
-                "dreamsim": "dreamsim_vector"
-            }
-            
-            for name, col in vector_cols.items():
-                vecs = []
-                for img in images:
-                    v = getattr(img, col)
-                    if v is None:
-                        dims = {
-                            "glcm": 64, "wavelet": 12, "correlogram": 32, "ehd": 80, "cld": 64,
-                            "spm": 160, "saliency": 32, "semantic": 1024, "dreamsim": 1792
-                        }
-                        vecs.append(np.zeros(dims.get(name, 512)))
-                    else:
-                        vecs.append(np.array(v))
-                
-                self.feature_matrices[name] = get_similarity_matrix(np.array(vecs), metric="cosine")
-
-            dom_colors = np.array([(img.dominant_color_vector if img.dominant_color_vector is not None else [0,0,0]) for img in images])
-            self.feature_matrices["dominant_color"] = get_similarity_matrix(dom_colors, metric="l2_color")
-
-            # 4. Discrete
-            self.feature_matrices["category"] = get_discrete_similarity([img.category for img in images], type="category")
-            self.feature_matrices["entity"] = get_discrete_similarity([img.entities for img in images], type="entities")
+                    if metric_type in ["scalar", "sharpness", "cosine", "l2_color", "l2_cell"]:
+                        raw_data = [getattr(img, col_name) for img in images]
+                        
+                        if metric_type in ["scalar", "sharpness"]:
+                            vec = np.array([float(v) if v is not None else 0.0 for v in raw_data])
+                            self.feature_matrices[name] = get_similarity_matrix(vec, metric=METRIC_MAP[metric_type])
+                        else:
+                            sample_v = next((v for v in raw_data if v is not None), None)
+                            dim = len(sample_v) if sample_v is not None else 512
+                            vecs = np.array([np.array(v) if v is not None else np.zeros(dim) for v in raw_data])
+                            self.feature_matrices[name] = get_similarity_matrix(vecs, metric=METRIC_MAP[metric_type])
+                            
+                    elif metric_type == "category":
+                        vals = [getattr(img, col_name) for img in images]
+                        self.feature_matrices[name] = get_discrete_similarity(vals, type="category")
+                        
+                    elif metric_type == "entity":
+                        vals = [getattr(img, col_name) for img in images]
+                        self.feature_matrices[name] = get_discrete_similarity(vals, type="entities")
+                        
+                    # Yield control after processing each feature matrix
+                    time.sleep(0.01)
+                except Exception as e:
+                    logger.error(f"Failed to load feature matrix for {name}: {e}")
 
             self.feature_names = list(self.feature_matrices.keys())
             self._is_loaded = True
@@ -196,17 +181,22 @@ class WeightOptimizer:
         self.trial_history = [] # List of (n_features, map5)
 
     def prepare(self):
-        logger.info("Preparing folder-based ground truth matrix...")
-        gt_path = os.path.join(settings.base_dir, "ground_truth.json")
+        logger.info("Preparing ground truth matrix for optimization...")
+        # Prioritize ground_truth_2.json (Diverse subset) over full ground_truth.json
+        gt_path = os.path.join(settings.base_dir, "ground_truth_2.json")
         if not os.path.exists(gt_path):
-            logger.error("ground_truth.json not found!")
+            gt_path = os.path.join(settings.base_dir, "ground_truth.json")
+            
+        if not os.path.exists(gt_path):
+            logger.error("No ground truth file found (tried ground_truth_2.json and ground_truth.json)")
             return False
             
+        logger.info(f"Using ground truth source: {os.path.basename(gt_path)}")
         try:
             with open(gt_path, "r") as f:
                 gt_data = json.load(f)
         except Exception as e:
-            logger.error(f"Failed to read ground_truth.json: {e}")
+            logger.error(f"Failed to read {gt_path}: {e}")
             return False
         
         file_to_label = {}
@@ -273,6 +263,11 @@ class WeightOptimizer:
                 aps.append(np.sum(precision_at_hits) / min(total_positives, k))
             else:
                 aps.append(average_precision_score(l_masked, s_masked))
+                
+            # Periodically yield control
+            if i % 100 == 0:
+                time.sleep(0.001)
+                
         return np.mean(aps) if aps else 0.0
 
     def optimize(self, n_trials: int = 100, allow_negative: bool = False):
