@@ -184,28 +184,32 @@ class DataService:
         if len(full_gt) <= 50:
             return {"message": "Dataset too small", "count": len(full_gt)}
             
+        # 4. Greedy selection with analytics
         selected_keys = []
         used_images = set()
         candidates = list(full_gt.keys())
+        total_candidates = len(candidates)
+        perfectly_unique_count = 0
         
-        # Greedy
-        first_key = candidates[0]
-        selected_keys.append(first_key)
-        used_images.update(full_gt[first_key])
-        candidates.remove(first_key)
-        
-        for _ in range(49):
+        for _ in range(50):
             best_key = None
             max_new = -1
+            
             for key in candidates:
-                new_count = sum(1 for img in full_gt[key] if img not in used_images)
-                if new_count > max_new:
-                    max_new = new_count
+                cluster_images = set(full_gt[key])
+                new_images_count = len(cluster_images - used_images)
+                if new_images_count > max_new:
+                    max_new = new_images_count
                     best_key = key
+                if new_images_count == 10: # Found a perfectly unique cluster for current set
+                    break
+            
             if best_key:
                 selected_keys.append(best_key)
                 used_images.update(full_gt[best_key])
                 candidates.remove(best_key)
+                if max_new == 10:
+                    perfectly_unique_count += 1
             else: break
                 
         # 5. PHYSICAL EXPORT: Create folders and copy images
@@ -251,5 +255,10 @@ class DataService:
         return {
             "message": "Successfully extracted 50 diverse clusters and updated cache",
             "path": str(test_path),
+            "analytics": {
+                "total_candidates": total_candidates,
+                "perfectly_unique_selected": perfectly_unique_count,
+                "overlap_minimized": 50 - perfectly_unique_count
+            },
             **stats
         }
