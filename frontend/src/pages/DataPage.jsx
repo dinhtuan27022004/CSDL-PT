@@ -78,6 +78,8 @@ const DataPage = () => {
             setError(err.response?.data?.detail || "Action failed");
         }
     };
+    const generateGT = () => handleAction('generate');
+    const selectDiverseGT = () => handleAction('extract');
 
     const handleDownload = (filename) => {
         const baseUrl = import.meta.env.VITE_API_URL.replace('/api', '');
