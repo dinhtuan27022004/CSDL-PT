@@ -13,6 +13,9 @@ from collections import Counter
 
 logger = get_logger(__name__)
 
+# Global progress tracking
+_progress = {"status": "idle", "current": 0, "total": 100, "message": ""}
+
 class DataService:
     """Service for dataset management, ground truth generation, and analytics"""
     
@@ -20,58 +23,63 @@ class DataService:
         self.repository = repository
         self.settings = get_settings()
 
+    def get_progress(self):
+        return _progress
+
+    def _clear_folder_contents(self, folder_path: Path):
+        """Delete all contents inside a folder without deleting the folder itself"""
+        if not folder_path.exists():
+            folder_path.mkdir(parents=True, exist_ok=True)
+            return
+            
+        import shutil
+        for item in folder_path.iterdir():
+            try:
+                if item.is_file():
+                    item.unlink()
+                elif item.is_dir():
+                    shutil.rmtree(item)
+            except Exception as e:
+                logger.error(f"Failed to delete {item}: {e}")
+
     def get_stats_for_file(self, db: Session, filename: str, force_recompute: bool = False):
-        """Get stats from cache or recompute if forced/missing"""
+        return self._get_stats_internal(db, filename, force_recompute)
+
+    def _get_stats_internal(self, db: Session, filename: str, force_recompute: bool = False):
+        """Internal helper for stats calculation (NumPy optimized)"""
         import numpy as np
         import time
         
-        # 1. Check cache first
         cache_filename = filename.replace(".json", "_stats.json")
         cache_path = self.settings.base_dir / cache_filename
         
         if not force_recompute and cache_path.exists():
             try:
                 with open(cache_path, "r") as f:
-                    logger.info(f"Loading stats from cache: {cache_filename}")
                     return json.load(f)
-            except Exception as e:
-                logger.error(f"Failed to load cache {cache_filename}: {e}")
+            except: pass
 
-        # 2. Recompute
         path = self.settings.base_dir / filename
-        if not path.exists():
-            return None
-            
-        with open(path, "r") as f:
-            gt_data = json.load(f)
-            
-        if not gt_data:
-            return None
+        if not path.exists(): return None
+        with open(path, "r") as f: gt_data = json.load(f)
+        if not gt_data: return None
 
-        # Fetch all images once
         all_db_images = self.repository.get_all(db, limit=50000)
         n_total = len(all_db_images)
-        
         img_map = {os.path.basename(img.file_name): i for i, img in enumerate(all_db_images)}
-        vectors = []
-        valid_indices = []
-        for i, img in enumerate(all_db_images):
-            if img.dreamsim_vector is not None:
-                vectors.append(img.dreamsim_vector)
-                valid_indices.append(i)
+        vectors = [img.dreamsim_vector for img in all_db_images if img.dreamsim_vector is not None]
+        valid_indices = [i for i, img in enumerate(all_db_images) if img.dreamsim_vector is not None]
         
         if not vectors: return None
-        
-        X = np.array(vectors, dtype=np.float32)
-        X_norm = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-9)
+        X_norm = np.array(vectors, dtype=np.float32)
+        X_norm /= (np.linalg.norm(X_norm, axis=1, keepdims=True) + 1e-9)
         orig_to_norm = {orig_idx: norm_idx for norm_idx, orig_idx in enumerate(valid_indices)}
 
         sim_distribution = [0] * 10
         avg_sims = []
         all_appearances = []
         
-        logger.info(f"Recomputing stats for {filename}...")
-        for i, (query_fname, matches) in enumerate(gt_data.items()):
+        for query_fname, matches in gt_data.items():
             if not matches: continue
             q_name = matches[0]
             q_idx = img_map.get(q_name)
@@ -83,78 +91,50 @@ class DataService:
                 all_appearances.append(m)
                 m_idx = img_map.get(m)
                 if m_idx is not None and m_idx in orig_to_norm:
-                    m_vec = X_norm[orig_to_norm[m_idx]]
-                    sim = float(np.dot(q_vec, m_vec))
-                else:
-                    sim = 0.5
+                    sim = float(np.dot(q_vec, X_norm[orig_to_norm[m_idx]]))
+                else: sim = 0.5
                 cluster_sims.append(sim)
-                
+            
             avg_cluster_sim = sum(cluster_sims) / len(cluster_sims)
             avg_sims.append(avg_cluster_sim)
-            bin_idx = min(int(avg_cluster_sim * 10), 9)
-            sim_distribution[bin_idx] += 1
+            sim_distribution[min(int(avg_cluster_sim * 10), 9)] += 1
 
         counts = Counter(all_appearances)
         hub_images = [{"name": name, "count": count} for name, count in counts.most_common(10)]
         unique_appearing = len(counts)
-        coverage_pct = (unique_appearing / n_total) * 100 if n_total > 0 else 0
-        
         overlap_stats = [
             {"name": "Unique", "value": sum(1 for c in counts.values() if c == 1)},
             {"name": "Shared (2-5)", "value": sum(1 for c in counts.values() if 2 <= c <= 5)},
             {"name": "Highly Shared (6+)", "value": sum(1 for c in counts.values() if c > 5)},
         ]
 
-        chart_data = [{"range": f"{j/10}-{(j+1)/10}", "count": sim_distribution[j]} for j in range(10)]
-
         result = {
-            "source": filename,
-            "timestamp": time.time(),
-            "count": len(gt_data),
-            "stats": chart_data,
+            "source": filename, "timestamp": time.time(), "count": len(gt_data),
+            "stats": [{"range": f"{j/10}-{(j+1)/10}", "count": sim_distribution[j]} for j in range(10)],
             "hub_images": hub_images,
-            "coverage": {
-                "unique_images": unique_appearing,
-                "total_images": n_total,
-                "percentage": coverage_pct,
-                "overlap": overlap_stats
-            },
+            "coverage": {"unique_images": unique_appearing, "total_images": n_total, 
+                         "percentage": (unique_appearing/n_total)*100 if n_total > 0 else 0, "overlap": overlap_stats},
             "avg_overall_sim": sum(avg_sims) / len(avg_sims) if avg_sims else 0
         }
-
-        # Save to cache
-        try:
-            with open(cache_path, "w") as f:
-                json.dump(result, f, indent=2)
-                logger.info(f"Saved stats cache: {cache_filename}")
-        except Exception as e:
-            logger.error(f"Failed to save cache {cache_filename}: {e}")
-
+        with open(cache_path, "w") as f: json.dump(result, f, indent=2)
         return result
 
     def generate_ground_truth(self, db: Session):
-        """Generate ground_truth.json and force recompute stats cache"""
+        """Generate full ground truth and export to purify_data"""
         import numpy as np
+        import shutil
+        global _progress
         
         images = self.repository.get_all(db, limit=50000)
-        if not images:
-            return {"message": "No images in database", "count": 0}
-            
-        n = len(images)
-        logger.info(f"Generating ground truth for {n} images...")
+        if not images: return {"message": "No images"}
         
-        vectors = []
-        filenames = []
-        for img in images:
-            if img.dreamsim_vector is not None:
-                vectors.append(img.dreamsim_vector)
-                filenames.append(os.path.basename(img.file_name))
+        _progress.update({"status": "processing", "current": 0, "total": len(images), "message": "Calculating similarity matrix..."})
         
-        if not vectors:
-            return {"message": "No DreamSim vectors found", "count": 0}
-            
-        X = np.array(vectors, dtype=np.float32)
-        X_norm = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-9)
+        vectors = [img.dreamsim_vector for img in images if img.dreamsim_vector is not None]
+        filenames = [os.path.basename(img.file_name) for img in images if img.dreamsim_vector is not None]
+        
+        X_norm = np.array(vectors, dtype=np.float32)
+        X_norm /= (np.linalg.norm(X_norm, axis=1, keepdims=True) + 1e-9)
         sim_matrix = np.dot(X_norm, X_norm.T)
         
         gt_dict = {}
@@ -162,104 +142,83 @@ class DataService:
             top_indices = np.argsort(sim_matrix[i])[::-1][:10]
             gt_dict[str(i + 1)] = [filenames[idx] for idx in top_indices]
 
-        gt_path = self.settings.base_dir / "ground_truth.json"
-        with open(gt_path, "w") as f:
+        # Save JSON
+        with open(self.settings.base_dir / "ground_truth.json", "w") as f:
             json.dump(gt_dict, f, indent=2)
             
-        # FORCE recompute stats cache
-        stats = self.get_stats_for_file(db, "ground_truth.json", force_recompute=True)
-        return {
-            "message": f"Successfully generated ground truth and updated cache",
-            **stats
-        }
+        # Physical Export to purify_data (3236 folders)
+        purify_dir = Path("C:/PTIT/2026/CSDL-PT/purify_data")
+        self._clear_folder_contents(purify_dir)
+        
+        _progress.update({"status": "exporting", "current": 0, "total": len(filenames), "message": "Exporting images to purify_data..."})
+        
+        for i, (cluster_id, cluster_files) in enumerate(gt_dict.items()):
+            c_path = purify_dir / f"cluster_{int(cluster_id):04d}"
+            c_path.mkdir(exist_ok=True)
+            for f in cluster_files:
+                src = self.settings.uploads_dir / f
+                if src.exists(): shutil.copy2(src, c_path / f)
+            
+            if (i+1) % 50 == 0:
+                _progress["current"] = i + 1
+                
+        _progress.update({"status": "idle", "current": 100, "total": 100, "message": "Done"})
+        return self._get_stats_internal(db, "ground_truth.json", force_recompute=True)
 
     def select_diverse_ground_truth(self, db: Session):
-        """Select 50 clusters from ground_truth.json with minimum overlap"""
+        """Extract 50 diverse clusters and export to purify_data_2"""
+        import numpy as np
+        import shutil
+        global _progress
+        
         gt_path = self.settings.base_dir / "ground_truth.json"
-        if not gt_path.exists():
-            return {"error": "Ground truth file not found."}
-            
-        with open(gt_path, "r") as f:
-            full_gt = json.load(f)
-            
-        if len(full_gt) <= 50:
-            return {"message": "Dataset too small", "count": len(full_gt)}
-            
-        # 4. Greedy selection with analytics
+        if not gt_path.exists(): return {"message": "Run full generation first"}
+        
+        with open(gt_path, "r") as f: full_gt = json.load(f)
+        
+        _progress.update({"status": "processing", "current": 0, "total": 50, "message": "Selecting diverse clusters..."})
+        
         selected_keys = []
         used_images = set()
         candidates = list(full_gt.keys())
         total_candidates = len(candidates)
-        perfectly_unique_count = 0
+        perfectly_unique = 0
         
-        for _ in range(50):
-            best_key = None
-            max_new = -1
-            
+        for i in range(50):
+            best_key, max_new = None, -1
             for key in candidates:
-                cluster_images = set(full_gt[key])
-                new_images_count = len(cluster_images - used_images)
-                if new_images_count > max_new:
-                    max_new = new_images_count
-                    best_key = key
-                if new_images_count == 10: # Found a perfectly unique cluster for current set
-                    break
+                new_count = len(set(full_gt[key]) - used_images)
+                if new_count > max_new:
+                    max_new, best_key = new_count, key
+                if new_count == 10: break
             
             if best_key:
                 selected_keys.append(best_key)
                 used_images.update(full_gt[best_key])
                 candidates.remove(best_key)
-                if max_new == 10:
-                    perfectly_unique_count += 1
+                if max_new == 10: perfectly_unique += 1
+                _progress["current"] = i + 1
             else: break
                 
-        # 5. PHYSICAL EXPORT: Create folders and copy images
-        import shutil
-        purify_dir = Path("C:/PTIT/2026/CSDL-PT/purify_data")
+        # Physical Export to purify_data_2 (50 folders)
+        purify_dir_2 = Path("C:/PTIT/2026/CSDL-PT/purify_data_2")
+        self._clear_folder_contents(purify_dir_2)
         
-        # Clean or ensure directory exists
-        if purify_dir.exists():
-            shutil.rmtree(purify_dir) # Start fresh each time
-        purify_dir.mkdir(parents=True, exist_ok=True)
-        
-        logger.info(f"Physically exporting 50 clusters to {purify_dir}...")
+        _progress.update({"status": "exporting", "current": 0, "total": 50, "message": "Exporting images to purify_data_2..."})
         
         for i, key in enumerate(selected_keys):
-            cluster_id = f"cluster_{i+1:02d}"
-            cluster_path = purify_dir / cluster_id
-            cluster_path.mkdir(parents=True, exist_ok=True)
-            
-            # Get filenames from the cluster
-            filenames = full_gt[key]
-            for fname in filenames:
-                source_path = self.settings.uploads_dir / fname
-                dest_path = cluster_path / fname
-                
-                if source_path.exists():
-                    try:
-                        shutil.copy2(source_path, dest_path)
-                    except Exception as e:
-                        logger.error(f"Failed to copy {fname}: {e}")
-                else:
-                    logger.warning(f"Source file not found: {source_path}")
+            c_path = purify_dir_2 / f"cluster_{i+1:02d}"
+            c_path.mkdir(exist_ok=True)
+            for f in full_gt[key]:
+                src = self.settings.uploads_dir / f
+                if src.exists(): shutil.copy2(src, c_path / f)
+            _progress["current"] = i + 1
 
-        # 6. Save JSON and update cache
+        # Save JSON
         test_path = self.settings.base_dir / "ground_truth_2.json"
         test_gt = {str(i+1): full_gt[key] for i, key in enumerate(selected_keys)}
+        with open(test_path, "w") as f: json.dump(test_gt, f, indent=2)
         
-        with open(test_path, "w") as f:
-            json.dump(test_gt, f, indent=2)
-            
-        # FORCE recompute stats cache for ground_truth_2.json
-        stats = self.get_stats_for_file(db, "ground_truth_2.json", force_recompute=True)
-        
-        return {
-            "message": "Successfully extracted 50 diverse clusters and updated cache",
-            "path": str(test_path),
-            "analytics": {
-                "total_candidates": total_candidates,
-                "perfectly_unique_selected": perfectly_unique_count,
-                "overlap_minimized": 50 - perfectly_unique_count
-            },
-            **stats
-        }
+        _progress.update({"status": "idle", "current": 100, "total": 100, "message": "Done"})
+        stats = self._get_stats_internal(db, "ground_truth_2.json", force_recompute=True)
+        return {**stats, "analytics": {"total_candidates": total_candidates, "perfectly_unique": perfectly_unique}}

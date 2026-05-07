@@ -34,6 +34,18 @@ yarn-error.log*
 .pnpm-debug.log*
 frontend/dist/
 
+# Data & Cache
+api/ground_truth*.json
+api/*_stats.json
+purify_data/
+purify_data_2/
+api/purify_data/
+api/purify_data_2/
+api/scratch/
+modules/images/semantic_cache.json
+images/
+ima_test/
+
 # IDE
 .vscode/
 .idea/

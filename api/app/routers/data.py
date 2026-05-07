@@ -45,6 +45,10 @@ def select_diverse_gt(
         logger.error(f"Diverse GT selection failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/progress")
+def get_progress(service: DataService = Depends(get_data_service)):
+    return service.get_progress()
+
 @router.get("/stats")
 def get_stats(
     mode: str = "full",
