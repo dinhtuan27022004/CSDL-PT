@@ -120,7 +120,7 @@ class DataService:
         return result
 
     def generate_ground_truth(self, db: Session):
-        """Generate full ground truth and export to purify_data"""
+        """Generate full ground truth and export 3236 folders to purify_data"""
         import numpy as np
         import shutil
         global _progress
@@ -128,7 +128,7 @@ class DataService:
         images = self.repository.get_all(db, limit=50000)
         if not images: return {"message": "No images"}
         
-        _progress.update({"status": "processing", "current": 0, "total": len(images), "message": "Calculating similarity matrix..."})
+        _progress.update({"status": "processing", "current": 0, "total": 100, "message": "Analyzing visual patterns (NumPy)..."})
         
         vectors = [img.dreamsim_vector for img in images if img.dreamsim_vector is not None]
         filenames = [os.path.basename(img.file_name) for img in images if img.dreamsim_vector is not None]
@@ -150,19 +150,21 @@ class DataService:
         purify_dir = Path("C:/PTIT/2026/CSDL-PT/purify_data")
         self._clear_folder_contents(purify_dir)
         
-        _progress.update({"status": "exporting", "current": 0, "total": len(filenames), "message": "Exporting images to purify_data..."})
+        total_clusters = len(gt_dict)
+        _progress.update({"status": "exporting", "current": 0, "total": total_clusters, "message": "Purifying data: Exporting 3236 clusters..."})
         
         for i, (cluster_id, cluster_files) in enumerate(gt_dict.items()):
             c_path = purify_dir / f"cluster_{int(cluster_id):04d}"
-            c_path.mkdir(exist_ok=True)
+            c_path.mkdir(exist_ok=True, parents=True)
             for f in cluster_files:
                 src = self.settings.uploads_dir / f
-                if src.exists(): shutil.copy2(src, c_path / f)
+                if src.exists():
+                    shutil.copy2(src, c_path / f)
             
-            if (i+1) % 50 == 0:
+            if (i+1) % 50 == 0 or (i+1) == total_clusters:
                 _progress["current"] = i + 1
                 
-        _progress.update({"status": "idle", "current": 100, "total": 100, "message": "Done"})
+        _progress.update({"status": "idle", "current": 100, "total": 100, "message": "Dataset Purified Successfully"})
         return self._get_stats_internal(db, "ground_truth.json", force_recompute=True)
 
     def select_diverse_ground_truth(self, db: Session):
@@ -176,7 +178,7 @@ class DataService:
         
         with open(gt_path, "r") as f: full_gt = json.load(f)
         
-        _progress.update({"status": "processing", "current": 0, "total": 50, "message": "Selecting diverse clusters..."})
+        _progress.update({"status": "processing", "current": 0, "total": 50, "message": "Identifying 50 diverse archetypes..."})
         
         selected_keys = []
         used_images = set()
@@ -204,14 +206,15 @@ class DataService:
         purify_dir_2 = Path("C:/PTIT/2026/CSDL-PT/purify_data_2")
         self._clear_folder_contents(purify_dir_2)
         
-        _progress.update({"status": "exporting", "current": 0, "total": 50, "message": "Exporting images to purify_data_2..."})
+        _progress.update({"status": "exporting", "current": 0, "total": 50, "message": "Purifying diverse set: Exporting 50 clusters..."})
         
         for i, key in enumerate(selected_keys):
             c_path = purify_dir_2 / f"cluster_{i+1:02d}"
-            c_path.mkdir(exist_ok=True)
+            c_path.mkdir(exist_ok=True, parents=True)
             for f in full_gt[key]:
                 src = self.settings.uploads_dir / f
-                if src.exists(): shutil.copy2(src, c_path / f)
+                if src.exists():
+                    shutil.copy2(src, c_path / f)
             _progress["current"] = i + 1
 
         # Save JSON
@@ -219,6 +222,6 @@ class DataService:
         test_gt = {str(i+1): full_gt[key] for i, key in enumerate(selected_keys)}
         with open(test_path, "w") as f: json.dump(test_gt, f, indent=2)
         
-        _progress.update({"status": "idle", "current": 100, "total": 100, "message": "Done"})
+        _progress.update({"status": "idle", "current": 100, "total": 100, "message": "Diverse Set Purified Successfully"})
         stats = self._get_stats_internal(db, "ground_truth_2.json", force_recompute=True)
         return {**stats, "analytics": {"total_candidates": total_candidates, "perfectly_unique": perfectly_unique}}
