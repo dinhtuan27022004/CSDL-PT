@@ -51,6 +51,20 @@ api/static/uploads/
 static/uploads/
 api/visualizations/
 api/app/modules/images/semantic_cache.json
+images/
+ima_test/
+
+# Model Weights and Data
+api/models/
+*.pth
+*.pth.tar
+*.h5
+*.zip
+*.safetensors
+
+# Evaluation Data
+api/*.json
+api/app/services/semantic_cache.json
 
 # Temporary scripts
 delete.py

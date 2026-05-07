@@ -49,17 +49,11 @@ const SEARCH_FEATURES = [
     { key: 'saliency', label: 'Saliency', group: 'advanced' },
     { key: 'bovw', label: 'BoVW', group: 'advanced' },
 
-    // Deep Learning
-    { key: 'clip', label: 'CLIP' },
-    { key: 'dinov2', label: 'DINOv2' },
-    { key: 'siglip', label: 'SigLIP' },
-    { key: 'convnext', label: 'ConvNeXt' },
-    { key: 'efficientnet', label: 'EfficientNet' },
-    { key: 'dreamsim', label: 'DreamSim' },
-    { key: 'sam', label: 'SAM' },
+    // Semantic / Metadata
     { key: 'semantic', label: 'Semantic' },
     { key: 'category', label: 'Category' },
     { key: 'entity', label: 'Entity' },
+    { key: 'dreamsim', label: 'DreamSim' },
 
     // Multi-Space Histograms
     ...COLOR_SPACES.flatMap(space => METHODS.map(method => ({
@@ -100,8 +94,6 @@ const SimilaritySearchForm = () => {
     
     // Search Mode: 'optimized' | 'manual' | 'equal'
     const [mode, setMode] = useState('optimized');
-    const [optimizationTarget, setOptimizationTarget] = useState('clip');
-    const [compareWithGT, setCompareWithGT] = useState(false);
     const [activeGroup, setActiveGroup] = useState('basic');
     const [manualWeights, setManualWeights] = useState(
         SEARCH_FEATURES.reduce((acc, f) => ({ ...acc, [f.key]: 1.0 }), {})
@@ -177,8 +169,6 @@ const SimilaritySearchForm = () => {
 
         const searchSettings = {
             mode,
-            optimization_target: optimizationTarget,
-            compare_with_gt: compareWithGT,
             weights: mode === 'manual' ? manualWeights : null,
             limit
         };
@@ -251,66 +241,18 @@ const SimilaritySearchForm = () => {
                                     <p className="text-[10px] opacity-70">Fine-tune weights manually</p>
                                 </div>
                             </button>
-                            <button
-                                type="button"
-                                onClick={() => setMode('equal')}
-                                className={`flex-1 flex items-center gap-3 p-4 rounded-xl border transition-all ${
-                                    mode === 'equal'
-                                    ? 'bg-primary-500/10 border-primary-500/50 text-primary-400'
-                                    : 'bg-slate-800/30 border-slate-700 text-slate-500 hover:border-slate-600'
-                                }`}
-                            >
-                                <Equal className="w-5 h-5" />
-                                <div className="text-left">
-                                    <p className="text-sm font-bold uppercase tracking-tight">Equal</p>
-                                    <p className="text-[10px] opacity-70">Distribute weights evenly</p>
-                                </div>
-                            </button>
                         </div>
                         
-                        {/* Optimization Target Selection (Optimized Mode) */}
+                        {/* Optimized Mode Info */}
                         {mode === 'optimized' && (
                             <div className="space-y-3 pt-2 border-t border-slate-700/30 animate-in fade-in duration-500">
                                 <div className="flex items-center justify-between">
                                     <span className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
-                                        <Zap className="w-3 h-3 text-primary-500" /> Ground Truth Optimization Target
+                                        <Zap className="w-3 h-3 text-primary-500" /> Ground Truth Optimization
                                     </span>
                                 </div>
-                                <div className="flex flex-wrap gap-2">
-                                    {['clip', 'dinov2', 'siglip', 'dreamsim'].map((target) => (
-                                        <button
-                                            key={target}
-                                            type="button"
-                                            onClick={() => setOptimizationTarget(target)}
-                                            className={`px-4 py-2 rounded-lg text-xs font-bold transition-all uppercase tracking-wider ${
-                                                optimizationTarget === target
-                                                ? 'bg-primary-600 text-white shadow-lg shadow-primary-600/20'
-                                                : 'bg-slate-800 text-slate-400 hover:bg-slate-750'
-                                            }`}
-                                        >
-                                            {target === 'clip' ? 'CLIP Large' : 
-                                             target === 'dinov2' ? 'DINOv2 Giant' : 
-                                             target === 'siglip' ? 'SigLIP Base' : 'DreamSim'}
-                                        </button>
-                                    ))}
-                                </div>
-                                <div className="flex items-center justify-between pt-2">
-                                    <div className="flex items-center gap-3">
-                                        <label htmlFor="compare-gt" className="relative inline-flex items-center cursor-pointer group">
-                                            <input 
-                                                type="checkbox" 
-                                                id="compare-gt" 
-                                                checked={compareWithGT} 
-                                                onChange={(e) => setCompareWithGT(e.target.checked)} 
-                                                className="sr-only peer" 
-                                            />
-                                            <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-600 group-hover:ring-4 group-hover:ring-primary-500/10 transition-all"></div>
-                                            <span className="ml-3 text-sm font-bold text-slate-400 group-hover:text-slate-300 transition-colors">Compare with GT Results</span>
-                                        </label>
-                                    </div>
-                                </div>
-                                <p className="text-[10px] text-slate-500 italic px-1">
-                                    Ranking weights will be loaded from the set that achieved maximum mAP against the selected model.
+                                <p className="text-sm text-slate-400">
+                                    Ranking weights are automatically optimized based on folder-based Ground Truth to maximize retrieval accuracy.
                                 </p>
                             </div>
                         )}
@@ -320,13 +262,22 @@ const SimilaritySearchForm = () => {
                             <div className="space-y-4 pt-2">
                                 <div className="flex items-center justify-between">
                                     <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Attribute Weighting Matrix</span>
-                                    <button 
-                                        type="button" 
-                                        onClick={() => setManualWeights(SEARCH_FEATURES.reduce((acc, f) => ({ ...acc, [f.key]: 1.0 }), {}))}
-                                        className="text-[10px] text-slate-500 hover:text-slate-400 flex items-center gap-1 transition-colors"
-                                    >
-                                        <X className="w-3 h-3" /> Reset all to 1.0
-                                    </button>
+                                    <div className="flex gap-4">
+                                        <button 
+                                            type="button" 
+                                            onClick={() => setManualWeights(SEARCH_FEATURES.reduce((acc, f) => ({ ...acc, [f.key]: 1.0 }), {}))}
+                                            className="text-[10px] text-slate-500 hover:text-slate-400 flex items-center gap-1 transition-colors"
+                                        >
+                                            <X className="w-3 h-3" /> Reset to 1.0
+                                        </button>
+                                        <button 
+                                            type="button" 
+                                            onClick={() => setManualWeights(SEARCH_FEATURES.reduce((acc, f) => ({ ...acc, [f.key]: 0.0 }), {}))}
+                                            className="text-[10px] text-red-500/70 hover:text-red-500 flex items-center gap-1 transition-colors"
+                                        >
+                                            <X className="w-3 h-3" /> Reset to 0
+                                        </button>
+                                    </div>
                                 </div>
                                 
                                 {/* Feature Groups Tabs */}
@@ -349,12 +300,12 @@ const SimilaritySearchForm = () => {
 
                                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
                                     {SEARCH_FEATURES.filter(f => {
-                                        if (activeGroup === 'basic') return !f.group && !['clip', 'dinov2', 'siglip', 'convnext', 'efficientnet', 'dreamsim', 'sam', 'semantic', 'category', 'entity'].includes(f.key);
-                                        if (activeGroup === 'deep') return ['clip', 'dinov2', 'siglip', 'convnext', 'efficientnet', 'dreamsim', 'sam', 'semantic', 'category', 'entity'].includes(f.key);
+                                        if (activeGroup === 'basic') return !f.group && !['semantic', 'category', 'entity', 'dreamsim'].includes(f.key);
+                                        if (activeGroup === 'deep') return ['semantic', 'category', 'entity', 'dreamsim'].includes(f.key);
                                         return f.group === activeGroup;
                                     }).map((feature) => (
-                                        <div key={feature.key} className="space-y-1.5 p-2 bg-slate-800/50 rounded-lg border border-slate-700/50 hover:border-slate-600 transition-colors">
-                                            <label className="block text-[10px] font-bold text-slate-400 truncate uppercase tracking-tighter">
+                                        <div key={feature.key} className="flex items-center justify-between gap-2 p-2 bg-slate-800/50 rounded-lg border border-slate-700/50 hover:border-slate-600 transition-colors">
+                                            <label className="text-[10px] font-bold text-slate-400 truncate uppercase tracking-tighter flex-1">
                                                 {feature.label}
                                             </label>
                                             <input 
@@ -362,7 +313,7 @@ const SimilaritySearchForm = () => {
                                                 step="0.1"
                                                 value={manualWeights[feature.key]}
                                                 onChange={(e) => handleWeightChange(feature.key, e.target.value)}
-                                                className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-primary-500/50"
+                                                className="w-16 bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] text-white text-right focus:outline-none focus:border-primary-500/50"
                                             />
                                         </div>
                                     ))}

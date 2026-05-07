@@ -6,7 +6,7 @@ import { formatDate } from '../../utils/formatters';
 import { Image as ImageIcon, Sparkles, BrainCircuit, Zap } from 'lucide-react';
 
 const VIS_COMPONENTS = [
-    { id: 'histogram', label: 'Histogram', width: 450, color: 'text-primary-400' },
+    { id: 'histogram', label: 'Histograms (21)', width: 600, color: 'text-primary-400' },
     { id: 'hog', label: 'HOG Map', width: 180, color: 'text-orange-400' },
     { id: 'ccv', label: 'Color Coherence', width: 180, color: 'text-emerald-400' },
     { id: 'gabor', label: 'Gabor Texture', width: 180, color: 'text-purple-400' },
@@ -16,7 +16,7 @@ const VIS_COMPONENTS = [
 ];
 
 const SimilarityResults = () => {
-    const { similarityResults, gtResults, similarityLoading, queryImageFeatures, queryImagePreviewUrl } = useImageStore();
+    const { similarityResults, similarityLoading, queryImageFeatures, queryImagePreviewUrl } = useImageStore();
     const [enabledVis, setEnabledVis] = React.useState({
         histogram: true,
         hog: true,
@@ -39,6 +39,83 @@ const SimilarityResults = () => {
             return hex.length === 1 ? '0' + hex : hex;
         }).join('');
     };
+
+    const renderHistogramGrid = (item) => {
+        const urlData = item.histogramPreviewUrl;
+        if (!urlData) return <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>;
+        
+        try {
+            // Check if it's a JSON string (multiple images) or a single URL
+            const paths = typeof urlData === 'string' && urlData.startsWith('{') 
+                ? JSON.parse(urlData) 
+                : null;
+            
+            if (!paths) {
+                return <img src={urlData} className="w-full h-full object-fill" />;
+            }
+
+            const spaces = ["rgb", "hsv", "lab", "ycrcb", "hls", "xyz", "gray"];
+            const methods = ["std", "interp", "gauss"];
+
+            return (
+                <div className="grid grid-cols-3 gap-0.5 p-0.5 bg-slate-900 w-full h-full overflow-y-auto custom-scrollbar">
+                    {spaces.map(space => (
+                        methods.map(method => {
+                            const key = `${space}_${method}`;
+                            const path = paths[key];
+                            // Map to similarity key: space_hist_method_similarity
+                            const simKey = `${space}_hist_${method}_similarity`;
+                            const sim = item[simKey] || item[`${space}_${method}_similarity`] || 0;
+                            
+                            return (
+                                <div key={key} className="relative aspect-[4/3] bg-black border border-slate-800 group/hist overflow-hidden">
+                                    {path ? (
+                                        <img 
+                                            src={path} 
+                                            alt={key} 
+                                            className="w-full h-full object-cover opacity-80 group-hover/hist:opacity-100 transition-opacity" 
+                                        />
+                                    ) : (
+                                        <div className="w-full h-full flex items-center justify-center text-[6px] text-slate-700">N/A</div>
+                                    )}
+                                    <div className="absolute top-0 left-0 right-0 bg-black/60 backdrop-blur-[2px] py-0.5 px-1.5 flex justify-between items-center border-b border-white/5 opacity-0 group-hover/hist:opacity-100 transition-opacity">
+                                        <span className="text-[5px] font-black text-slate-300 uppercase tracking-tighter truncate block">{space} {method}</span>
+                                        <span className="text-[6px] font-mono font-black text-primary-400">{(sim * 100).toFixed(0)}%</span>
+                                    </div>
+                                    {/* Small bottom similarity badge */}
+                                    <div className="absolute bottom-0.5 right-0.5 bg-black/80 px-1 rounded-[1px] text-[5px] font-mono font-black text-white/40 group-hover/hist:text-primary-400 transition-colors pointer-events-none">
+                                        {(sim * 100).toFixed(0)}%
+                                    </div>
+                                </div>
+                            );
+                        })
+                    ))}
+                </div>
+            );
+        } catch (e) {
+            console.error("Failed to parse histogram paths", e);
+            return <img src={urlData} className="w-full h-full object-fill" />;
+        }
+    };
+
+    const VisWrapper = ({ children, label, similarity }) => (
+        <div className="relative w-full h-full group/vis">
+            {children}
+            <div className="absolute top-0 left-0 right-0 bg-slate-950/80 backdrop-blur-md px-2 py-1 flex justify-between items-center border-b border-white/5 translate-y-[-100%] group-hover/vis:translate-y-0 transition-transform duration-300">
+                <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">{label}</span>
+                <div className="flex items-center gap-1.5">
+                    <div className="h-1 w-12 bg-slate-800 rounded-full overflow-hidden hidden sm:block">
+                        <div className="h-full bg-primary-500" style={{ width: `${(similarity || 0) * 100}%` }}></div>
+                    </div>
+                    <span className="text-[9px] font-mono font-black text-primary-400">{((similarity || 0) * 100).toFixed(0)}%</span>
+                </div>
+            </div>
+            {/* Permanent Mini Tag */}
+            <div className="absolute bottom-1 right-1 bg-black/80 px-1.5 py-0.5 rounded text-[7px] font-mono font-black text-white/40 group-hover/vis:text-primary-400 transition-colors pointer-events-none">
+                {((similarity || 0) * 100).toFixed(0)}%
+            </div>
+        </div>
+    );
 
     if (similarityResults.length === 0 && !similarityLoading) {
         return null;
@@ -136,55 +213,14 @@ const SimilarityResults = () => {
                 </div>
             </div>
 
-            {gtResults && gtResults.length > 0 ? (
-                /* Comparison Mode Layout */
-                <div className="grid grid-cols-2 gap-4">
-                    <div className="border-b border-primary-500/30 pb-1 mb-2">
-                        <h4 className="text-sm font-black text-white uppercase tracking-tighter">Optimized Results</h4>
-                    </div>
-                    <div className="border-b border-emerald-500/30 pb-1 mb-2">
-                        <h4 className="text-sm font-black text-white uppercase tracking-tighter">Ground Truth Results</h4>
-                    </div>
-
-                    {Array.from({ length: Math.max(similarityResults.length, gtResults.length) }).map((_, idx) => (
-                        <React.Fragment key={idx}>
-                            <div className="relative group">
-                                {similarityResults[idx] && (
-                                    <div className="bg-slate-900 border border-slate-800 overflow-hidden shadow-xl">
-                                        <div className="relative w-full aspect-video bg-black">
-                                            <img src={similarityResults[idx].previewUrl} className="w-full h-full object-cover" />
-                                            <div className="absolute top-1 right-1 bg-primary-600/90 text-white text-[9px] font-black px-1.5 py-0.5 shadow-lg">
-                                                {similarityResults[idx].similarity.toFixed(1)}%
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
-                                <div className="absolute -left-3 top-1/2 -translate-y-1/2 text-[8px] font-black text-slate-700 rotate-180 [writing-mode:vertical-lr]">RANK #{idx + 1}</div>
-                            </div>
-                            <div className="relative group">
-                                {gtResults[idx] && (
-                                    <div className="bg-slate-900 border border-slate-800 overflow-hidden shadow-xl">
-                                        <div className="relative w-full aspect-video bg-black">
-                                            <img src={gtResults[idx].previewUrl} className="w-full h-full object-cover" />
-                                            <div className="absolute top-1 right-1 bg-emerald-600/90 text-white text-[9px] font-black px-1.5 py-0.5 shadow-lg">
-                                                {gtResults[idx].similarity.toFixed(1)}%
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        </React.Fragment>
-                    ))}
-                </div>
-            ) : (
-                /* Matrix Table Layout */
-                <div className="relative overflow-x-auto overflow-y-hidden border border-slate-800 bg-slate-950 custom-scrollbar">
-                    <table className="w-full text-left border-collapse min-w-max">
-                        <thead>
-                            <tr className="bg-slate-900 border-b border-slate-800">
-                                <th className="px-0.5 py-2 w-12 text-[9px] font-black text-slate-600 uppercase tracking-widest text-center">Rank</th>
-                                <th className="px-0.5 py-2 w-80 text-[9px] font-black text-slate-600 uppercase tracking-widest">Main Result (16:9)</th>
-                                <th className="px-0.5 py-2 w-80 text-[9px] font-black text-slate-600 uppercase tracking-widest">Vision Metrics</th>
+            {/* Matrix Table Layout */}
+            <div className="relative overflow-x-auto overflow-y-hidden border border-slate-800 bg-slate-950 custom-scrollbar">
+                <table className="w-full text-left border-collapse min-w-max">
+                    <thead>
+                        <tr className="bg-slate-900 border-b border-slate-800">
+                            <th className="px-0.5 py-2 w-12 text-[9px] font-black text-slate-600 uppercase tracking-widest text-center">Rank</th>
+                            <th className="px-0.5 py-2 w-80 text-[9px] font-black text-slate-600 uppercase tracking-widest">Main Result (16:9)</th>
+                            <th className="px-0.5 py-2 w-80 text-[9px] font-black text-slate-600 uppercase tracking-widest">Vision Metrics</th>
                                 {VIS_COMPONENTS.map(vis => enabledVis[vis.id] && (
                                     <th key={vis.id} className={`px-0.5 py-2 text-[9px] font-black uppercase tracking-widest ${vis.color}`} style={{ width: vis.width }}>
                                         {vis.label}
@@ -207,84 +243,183 @@ const SimilarityResults = () => {
                                         </div>
                                         <div className="mt-0.5 px-2 text-[7px] font-bold text-slate-600 truncate max-w-[320px] uppercase">{item.file_name}</div>
                                     </td>
-                                    <td className="px-1 py-1 align-top border-r border-slate-800/30 bg-slate-900/20">
-                                        <div className="grid grid-cols-2 gap-x-2 gap-y-0 text-[7px]">
-                                            {/* Deep Semantic Models */}
-                                            <div className="flex justify-between items-center border-b border-slate-800/50 py-0.5"><span className="text-purple-500 font-black uppercase">CLIP</span><span className="font-mono text-purple-400">{(item.clip_similarity || 0).toFixed(0)}%</span></div>
-                                            <div className="flex justify-between items-center border-b border-slate-800/50 py-0.5"><span className="text-pink-500 font-black uppercase">DINO</span><span className="font-mono text-pink-400">{(item.dinov2_similarity || 0).toFixed(0)}%</span></div>
-                                            <div className="flex justify-between items-center border-b border-slate-800/50 py-0.5"><span className="text-rose-500 font-black uppercase">SAM</span><span className="font-mono text-rose-400">{(item.sam_similarity || 0).toFixed(0)}%</span></div>
-                                            <div className="flex justify-between items-center border-b border-slate-800/50 py-0.5"><span className="text-sky-500 font-black uppercase">DREAM</span><span className="font-mono text-sky-400">{(item.dreamsim_similarity || 0).toFixed(0)}%</span></div>
-                                            
-                                            {/* Multi-Space Matrix (Grouped) */}
-                                            {["rgb", "hsv", "lab", "ycrcb", "hls", "xyz", "gray"].map(space => (
-                                                <div key={space} className="flex justify-between items-center border-b border-slate-800/50 py-0.5">
-                                                    <span className={`font-black uppercase ${
-                                                        space === 'rgb' ? 'text-red-500' :
-                                                        space === 'hsv' ? 'text-orange-500' :
-                                                        space === 'lab' ? 'text-emerald-500' :
-                                                        space === 'ycrcb' ? 'text-blue-500' :
-                                                        space === 'hls' ? 'text-purple-500' :
-                                                        space === 'xyz' ? 'text-amber-500' : 'text-slate-400'
-                                                    }`}>{space}</span>
-                                                    <span className="font-mono text-slate-400">
-                                                        {(item[`${space}_hist_gauss_similarity`] || item[`${space}_hist_std_similarity`] || 0).toFixed(0)}%
-                                                    </span>
+                                    <td className="px-1 py-1 align-top border-r border-slate-800/30 bg-slate-900/40" style={{ width: 450 }}>
+                                        <div className="flex flex-col h-[180px] overflow-y-auto custom-scrollbar pr-1 bg-slate-950/50 p-1 border border-slate-800/50">
+                                            {/* SECTION 1: SEMANTIC INTELLIGENCE */}
+                                            <div className="mb-3">
+                                                <div className="flex items-center gap-1 mb-1 border-b border-primary-500/20 pb-0.5">
+                                                    <Sparkles className="w-2.5 h-2.5 text-primary-400" />
+                                                    <span className="text-[7px] font-black text-primary-400 uppercase tracking-widest">Semantic & Context</span>
                                                 </div>
-                                            ))}
-                                            
-                                            {/* Metadata */}
-                                            <div className="flex justify-between items-center py-0.5 col-span-2 text-slate-500 font-bold uppercase italic">
-                                                <span>{item.category || "General"}</span>
-                                                <span>{(item.edge_density_similarity || 0).toFixed(0)}% Edge</span>
+                                                <div className="space-y-1">
+                                                    <div className="flex flex-col gap-0.5">
+                                                        <div className="flex justify-between text-[7px]">
+                                                            <span className="text-slate-500">Category: <span className="text-primary-300">{item.category || "N/A"}</span></span>
+                                                            <span className="font-mono text-primary-400">{((item.category_similarity || 0) * 100).toFixed(0)}%</span>
+                                                        </div>
+                                                        <div className="h-0.5 w-full bg-slate-800"><div className="h-full bg-primary-600" style={{ width: `${(item.category_similarity || 0) * 100}%` }}></div></div>
+                                                    </div>
+                                                    <div className="flex flex-col gap-0.5">
+                                                        <div className="flex justify-between text-[7px]">
+                                                            <span className="text-slate-500">Entities: <span className="text-emerald-400">{(item.entities || []).join(', ') || "None"}</span></span>
+                                                            <span className="font-mono text-emerald-400">{((item.entity_similarity || 0) * 100).toFixed(0)}%</span>
+                                                        </div>
+                                                        <div className="h-0.5 w-full bg-slate-800"><div className="h-full bg-emerald-600" style={{ width: `${(item.entity_similarity || 0) * 100}%` }}></div></div>
+                                                    </div>
+                                                    <div className="text-[6px] text-slate-400 leading-tight bg-slate-900/50 p-1 border-l border-primary-500/50 italic">
+                                                        "{item.description || "No semantic description available."}"
+                                                    </div>
+                                                </div>
+                                            </div>
+
+
+                                            {/* SECTION 3: PHYSICAL METADATA */}
+                                            <div className="mb-3">
+                                                <div className="flex items-center gap-1 mb-1 border-b border-slate-500/20 pb-0.5">
+                                                    <Zap className="w-2.5 h-2.5 text-slate-400" />
+                                                    <span className="text-[7px] font-black text-slate-400 uppercase tracking-widest">Physical & Optical</span>
+                                                </div>
+                                                <div className="grid grid-cols-2 gap-x-2 gap-y-1">
+                                                    {[
+                                                        { label: 'Brightness', key: 'brightness' },
+                                                        { label: 'Contrast', key: 'contrast' },
+                                                        { label: 'Saturation', key: 'saturation' },
+                                                        { label: 'Edge Density', key: 'edge_density' },
+                                                        { label: 'Sharpness', key: 'sharpness' }
+                                                    ].map(m => (
+                                                        <div key={m.key} className="flex flex-col gap-0.5">
+                                                            <div className="flex justify-between text-[6px] items-baseline">
+                                                                <span className="text-slate-500">{m.label}: <span className="text-slate-300 font-mono">{(item[m.key] || 0).toFixed(2)}</span></span>
+                                                                <span className="font-mono text-slate-400">{((item[`${m.key}_similarity`] || 0) * 100).toFixed(0)}%</span>
+                                                            </div>
+                                                            <div className="h-0.5 w-full bg-slate-800/50 overflow-hidden">
+                                                                <div className="h-full bg-slate-600" style={{ width: `${(item[`${m.key}_similarity`] || 0) * 100}%` }}></div>
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+
+                                            {/* SECTION 4: COLOR SPACES (ALL 60+ VARIANTS) */}
+                                            <div className="mb-3">
+                                                <div className="flex items-center gap-1 mb-1 border-b border-orange-500/20 pb-0.5">
+                                                    <div className="w-2 h-2 rounded-full bg-gradient-to-tr from-red-500 via-green-500 to-blue-500"></div>
+                                                    <span className="text-[7px] font-black text-orange-400 uppercase tracking-widest">Multi-Space Color Analysis</span>
+                                                </div>
+                                                <div className="flex flex-col gap-1.5">
+                                                    {["rgb", "hsv", "lab", "ycrcb", "hls", "xyz", "gray"].map(space => (
+                                                        <div key={space} className="bg-slate-900/30 p-1 border-l border-slate-800">
+                                                            <div className="text-[6px] font-black text-slate-500 uppercase mb-1">{space} Domain</div>
+                                                            <div className="grid grid-cols-3 gap-x-2 gap-y-1">
+                                                                {['hist', 'cdf', 'joint'].map(type => (
+                                                                    <div key={type} className="flex flex-col gap-0.5">
+                                                                        <span className="text-[5px] text-slate-600 uppercase font-black">{type}</span>
+                                                                        {['std', 'interp', 'gauss'].map(method => {
+                                                                            const key = type === 'joint' ? `joint_${space}_${method}` : `${space}_${type}_${method}`;
+                                                                            const sim = item[`${key}_similarity`];
+                                                                            if (sim === undefined) return null;
+                                                                            return (
+                                                                                <div key={method} className="flex justify-between items-center text-[5px]">
+                                                                                    <span className="text-slate-500 italic">{method}</span>
+                                                                                    <span className="font-mono text-slate-400">{(sim * 100).toFixed(0)}%</span>
+                                                                                </div>
+                                                                            );
+                                                                        })}
+                                                                    </div>
+                                                                ))}
+                                                                <div className="flex flex-col gap-0.5">
+                                                                    <span className="text-[5px] text-slate-600 uppercase font-black">Grid</span>
+                                                                    <div className="flex justify-between items-center text-[5px]">
+                                                                        <span className="text-slate-500 italic">cell_{space}</span>
+                                                                        <span className="font-mono text-slate-400">{((item[`cell_${space}_similarity`] || 0) * 100).toFixed(0)}%</span>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+
+                                            {/* SECTION 5: HANDCRAFTED FEATURES (18) */}
+                                            <div className="mb-1">
+                                                <div className="flex items-center gap-1 mb-1 border-b border-emerald-500/20 pb-0.5">
+                                                    <div className="w-2.5 h-2.5 border border-emerald-500/50 flex items-center justify-center text-[5px] font-black text-emerald-500">M</div>
+                                                    <span className="text-[7px] font-black text-emerald-400 uppercase tracking-widest">Handcrafted Feature Mapping</span>
+                                                </div>
+                                                <div className="grid grid-cols-3 gap-1">
+                                                    {[
+                                                        'hog', 'hu_moments', 'lbp', 'color_moments', 'gabor', 'ccv', 
+                                                        'zernike', 'geo', 'tamura', 'edge_orientation', 'glcm', 'wavelet', 
+                                                        'correlogram', 'ehd', 'cld', 'spm', 'saliency'
+                                                    ].map(feat => (
+                                                        <div key={feat} className="bg-slate-900/50 p-1 border border-slate-800/50 flex flex-col items-center">
+                                                            <span className="text-[5px] text-slate-600 font-black uppercase leading-none mb-1 text-center">{feat.replace('_', ' ')}</span>
+                                                            <span className="text-[7px] font-mono text-emerald-500">{((item[`${feat}_similarity`] || 0) * 100).toFixed(0)}%</span>
+                                                            <div className="w-full h-[1px] bg-slate-800 mt-0.5"><div className="h-full bg-emerald-700" style={{ width: `${(item[`${feat}_similarity`] || 0) * 100}%` }}></div></div>
+                                                        </div>
+                                                    ))}
+                                                </div>
                                             </div>
                                         </div>
                                     </td>
                                     {enabledVis.histogram && (
                                         <td className="px-0 py-1 border-r border-slate-800/30">
-                                            <div className="w-[450px] h-[180px] bg-slate-950 border-x border-slate-800 overflow-hidden">
-                                                {item.histogramPreviewUrl ? <img src={item.histogramPreviewUrl} className="w-full h-full object-fill" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                            <div className="w-[600px] h-[180px] bg-slate-950 border-x border-slate-800 overflow-hidden">
+                                                {renderHistogramGrid(item)}
                                             </div>
                                         </td>
                                     )}
                                     {enabledVis.hog && (
                                         <td className="px-0 py-1 border-r border-slate-800/30">
                                             <div className="w-[180px] h-[180px] bg-black border-x border-slate-800 overflow-hidden">
-                                                {item.hogPreviewUrl ? <img src={item.hogPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                                <VisWrapper label="HOG Map" similarity={item.hog_similarity}>
+                                                    {item.hogPreviewUrl ? <img src={item.hogPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                                </VisWrapper>
                                             </div>
                                         </td>
                                     )}
                                     {enabledVis.ccv && (
                                         <td className="px-0 py-1 border-r border-slate-800/30">
                                             <div className="w-[180px] h-[180px] bg-black border-x border-slate-800 overflow-hidden">
-                                                {item.ccvPreviewUrl ? <img src={item.ccvPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                                <VisWrapper label="CCV Coherence" similarity={item.ccv_similarity}>
+                                                    {item.ccvPreviewUrl ? <img src={item.ccvPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                                </VisWrapper>
                                             </div>
                                         </td>
                                     )}
                                     {enabledVis.gabor && (
                                         <td className="px-0 py-1 border-r border-slate-800/30">
                                             <div className="w-[180px] h-[180px] bg-black border-x border-slate-800 overflow-hidden">
-                                                {item.gaborPreviewUrl ? <img src={item.gaborPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                                <VisWrapper label="Gabor Texture" similarity={item.gabor_similarity}>
+                                                    {item.gaborPreviewUrl ? <img src={item.gaborPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                                </VisWrapper>
                                             </div>
                                         </td>
                                     )}
                                     {enabledVis.lbp && (
                                         <td className="px-0 py-1 border-r border-slate-800/30">
                                             <div className="w-[180px] h-[180px] bg-black border-x border-slate-800 overflow-hidden">
-                                                {item.lbpPreviewUrl ? <img src={item.lbpPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                                <VisWrapper label="LBP Texture" similarity={item.lbp_similarity}>
+                                                    {item.lbpPreviewUrl ? <img src={item.lbpPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                                </VisWrapper>
                                             </div>
                                         </td>
                                     )}
                                     {enabledVis.cellColor && (
                                         <td className="px-0 py-1 border-r border-slate-800/30">
                                             <div className="w-[180px] h-[180px] bg-black border-x border-slate-800 overflow-hidden">
-                                                {item.cellColorPreviewUrl ? <img src={item.cellColorPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                                <VisWrapper label="Cell Grid" similarity={item.cell_rgb_similarity}>
+                                                    {item.cellColorPreviewUrl ? <img src={item.cellColorPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                                </VisWrapper>
                                             </div>
                                         </td>
                                     )}
                                     {enabledVis.hu && (
                                         <td className="px-0 py-1">
                                             <div className="w-[180px] h-[180px] bg-black border-l border-slate-800 overflow-hidden">
-                                                {item.huPreviewUrl ? <img src={item.huPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                                <VisWrapper label="Hu Moments" similarity={item.hu_moments_similarity}>
+                                                    {item.huPreviewUrl ? <img src={item.huPreviewUrl} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[9px] text-slate-800 uppercase">No Data</div>}
+                                                </VisWrapper>
                                             </div>
                                         </td>
                                     )}
@@ -293,7 +428,7 @@ const SimilarityResults = () => {
                         </tbody>
                     </table>
                 </div>
-            )}
+            
         </Card>
     );
 };

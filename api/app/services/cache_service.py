@@ -30,8 +30,17 @@ class CacheService:
         try:
             if not self.cache_path.exists():
                 return {}
+            
+            # Check if file is empty
+            if self.cache_path.stat().st_size == 0:
+                logger.warning(f"Cache file {self.cache_path.name} is empty. Initializing new cache.")
+                return {}
+
             with open(self.cache_path, "r", encoding="utf-8") as f:
                 return json.load(f)
+        except json.JSONDecodeError:
+            logger.error(f"Cache file {self.cache_path.name} is corrupted. Returning empty cache.")
+            return {}
         except Exception as e:
             logger.error(f"Failed to load cache: {e}")
             return {}

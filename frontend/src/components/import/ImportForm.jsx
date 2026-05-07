@@ -54,7 +54,8 @@ const ImportForm = () => {
         if (files.length === 0) return;
 
         try {
-            await addImage(files);
+            const paths = files.map(file => file.webkitRelativePath || file.name);
+            await addImage(files, paths);
             setFiles([]); // Clear after successful import
         } catch (error) {
             console.error('Import failed:', error);
@@ -133,10 +134,19 @@ const ImportForm = () => {
                                     <div className="w-8 h-8 rounded bg-slate-600 flex items-center justify-center shrink-0">
                                         <ImageIcon className="w-4 h-4 text-slate-400" />
                                     </div>
-                                    <span className="text-sm text-slate-200 truncate">{file.name}</span>
-                                    <span className="text-xs text-slate-500">
-                                        {(file.size / 1024).toFixed(1)} KB
-                                    </span>
+                                    <div className="flex flex-col min-w-0">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-sm text-slate-200 truncate">{file.name}</span>
+                                            <span className="text-xs text-slate-500 shrink-0">
+                                                {(file.size / 1024).toFixed(1)} KB
+                                            </span>
+                                        </div>
+                                        {file.webkitRelativePath && file.webkitRelativePath.includes('/') && (
+                                            <span className="text-[10px] text-primary-400 font-mono truncate">
+                                                Label: {file.webkitRelativePath.split('/').slice(-2, -1)[0]}
+                                            </span>
+                                        )}
+                                    </div>
                                 </div>
                                 <button
                                     type="button"

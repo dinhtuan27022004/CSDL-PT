@@ -1,4 +1,8 @@
 import os
+# Force offline mode for transformers/hf_hub at the very beginning
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_HUB_OFFLINE"] = "1"
+
 import json
 import base64
 import httpx
@@ -32,12 +36,28 @@ class LLMService:
         
         logger.info(f"Loading local embedding model: {settings.llm_embedding_model} on {self.device}...")
         try:
-            self.model = SentenceTransformer(settings.llm_embedding_model, device=self.device, local_files_only=True)
+            # Try loading with local_files_only first
+            self.model = SentenceTransformer(
+                settings.llm_embedding_model, 
+                device=self.device, 
+                local_files_only=True,
+                trust_remote_code=False
+            )
             logger.info(f"Model loaded OFFLINE on {self.device}")
-        except Exception:
-            logger.info("Downloading embedding model for the first time...")
-            self.model = SentenceTransformer(settings.llm_embedding_model, device=self.device)
-            logger.info(f"Model downloaded and loaded on {self.device}")
+        except Exception as e:
+            logger.warning(f"Failed to load model locally ({e}). Attempting normal load...")
+            try:
+                # If local_files_only fails, try normal load (might still work if cached but offline flag was too strict)
+                self.model = SentenceTransformer(
+                    settings.llm_embedding_model, 
+                    device=self.device,
+                    trust_remote_code=False
+                )
+                logger.info(f"Model loaded on {self.device}")
+            except Exception as final_e:
+                logger.error(f"CRITICAL: Could not load embedding model: {final_e}")
+                self.model = None
+                raise
 
     def unload_embedding_model(self):
         """Unloads BGE-M3 Model and frees GPU memory"""
@@ -86,7 +106,7 @@ class LLMService:
             logger.error(f"Vision API failed for {filename}: {e}")
             return {"category": "Error", "description": str(e), "entities": [], "cached": False}
 
-    def extract_embeddings_batch(self, texts: List[str], batch_size: int = 32) -> List[Optional[List[float]]]:
+    def extract_embeddings_batch(self, texts: List[str], filenames: Optional[List[str]] = None, batch_size: int = 32) -> List[Optional[List[float]]]:
         """Extracts embeddings for a list of texts using sequential GPU management"""
         if not texts:
             return []

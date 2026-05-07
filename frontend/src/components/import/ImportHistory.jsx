@@ -6,7 +6,7 @@ import { formatDate } from '../../utils/formatters';
 import { History, CheckCircle, XCircle, Clock, Image as ImageIcon, RefreshCw } from 'lucide-react';
 
 const ImportHistory = () => {
-    const { importHistory, recomputeAllFeatures, recomputing } = useImageStore();
+    const { importHistory, recomputeAllFeatures, recomputing, pagination, loadImportHistory } = useImageStore();
 
     const statusIcons = {
         completed: <CheckCircle className="w-4 h-4" />,
@@ -156,31 +156,66 @@ const ImportHistory = () => {
                                             </div>
                                         </div>
                                     </div>
-
-                                    <div className="pt-4 mt-auto border-t border-slate-700/50">
-                                        <div className="flex flex-col gap-1">
-                                            <span className="text-[10px] text-slate-500 uppercase font-black tracking-widest">Global Histogram Consistency</span>
-                                            <div className="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden border border-slate-700 mt-1">
-                                                <div className="h-full bg-primary-500/30 w-full" />
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    {/* Raw Features JSON */}
-                                    {item.features_json && (
-                                        <div className="mt-4 pt-2 border-t border-slate-700/50 flex flex-col min-h-0">
-                                            <span className="text-slate-500 text-[10px] uppercase font-bold tracking-wider mb-1">Raw Features Snippet</span>
-                                            <div className="bg-slate-950/50 rounded p-2 overflow-y-auto text-[10px] font-mono text-slate-400 border border-slate-800/50 max-h-20">
-                                                <pre className="whitespace-pre-wrap break-all">
-                                                    {JSON.stringify(item.features_json, null, 2)}
-                                                </pre>
-                                            </div>
-                                        </div>
-                                    )}
                                 </div>
                             </div>
                         </div>
                     ))}
+                </div>
+            )}
+
+            {/* Pagination Controls */}
+            {pagination.pages > 1 && (
+                <div className="flex items-center justify-between mt-8 pt-6 border-t border-slate-700/50">
+                    <div className="text-sm text-slate-500">
+                        Showing <span className="text-slate-300 font-bold">{importHistory.length}</span> of <span className="text-slate-300 font-bold">{pagination.total}</span> images
+                    </div>
+                    
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={() => loadImportHistory(pagination.page - 1, pagination.size)}
+                            disabled={pagination.page <= 1}
+                            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-all text-sm font-bold"
+                        >
+                            Previous
+                        </button>
+                        
+                        <div className="flex items-center gap-1">
+                            {[...Array(Math.min(5, pagination.pages))].map((_, i) => {
+                                let pageNum = pagination.page;
+                                if (pagination.page <= 3) pageNum = i + 1;
+                                else if (pagination.page >= pagination.pages - 2) pageNum = pagination.pages - 4 + i;
+                                else pageNum = pagination.page - 2 + i;
+                                
+                                if (pageNum <= 0 || pageNum > pagination.pages) return null;
+
+                                return (
+                                    <button
+                                        key={pageNum}
+                                        onClick={() => loadImportHistory(pageNum, pagination.size)}
+                                        className={`w-10 h-10 flex items-center justify-center rounded-lg border transition-all text-sm font-bold ${
+                                            pagination.page === pageNum
+                                                ? 'bg-primary-600 border-primary-500 text-white shadow-lg shadow-primary-900/40'
+                                                : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200'
+                                        }`}
+                                    >
+                                        {pageNum}
+                                    </button>
+                                );
+                            })}
+                        </div>
+
+                        <button
+                            onClick={() => loadImportHistory(pagination.page + 1, pagination.size)}
+                            disabled={pagination.page >= pagination.pages}
+                            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-all text-sm font-bold"
+                        >
+                            Next
+                        </button>
+                    </div>
+
+                    <div className="text-sm text-slate-500">
+                        Page <span className="text-slate-300 font-bold">{pagination.page}</span> of <span className="text-slate-300 font-bold">{pagination.pages}</span>
+                    </div>
                 </div>
             )}
         </Card>

@@ -5,8 +5,6 @@ from datetime import datetime
 class SearchSettings(BaseModel):
     """Configuration for weighted similarity search"""
     mode: str = "optimized"  # "optimized" | "manual" | "equal"
-    optimization_target: str = "clip" # "clip" | "dinov2" | "siglip" | "dreamsim"
-    compare_with_gt: bool = False
     weights: Optional[Dict[str, float]] = None
     limit: int = 20
     
@@ -95,6 +93,7 @@ class SearchSettings(BaseModel):
 
     use_tamura: bool = True
     use_edge_orientation: bool = True
+    use_dreamsim: bool = True
 
 class ImageBase(BaseModel):
     file_name: str
@@ -187,14 +186,6 @@ class ImageBase(BaseModel):
     gray_cdf_interp: Optional[List[float]] = None
     gray_cdf_gauss: Optional[List[float]] = None
     cell_gray_vector: Optional[List[float]] = None
-    clip_vector: Optional[List[float]] = None
-    dinov2_vector: Optional[List[float]] = None
-    siglip_vector: Optional[List[float]] = None
-    convnext_vector: Optional[List[float]] = None
-    efficientnet_vector: Optional[List[float]] = None
-    dreamsim_vector: Optional[List[float]] = None
-    sam_vector: Optional[List[float]] = None
-    
     file_path: Optional[str] = None
     hog_vis_path: Optional[str] = None
     hu_vis_path: Optional[str] = None
@@ -219,14 +210,12 @@ class ImageResponse(ImageBase):
     semantic_similarity: Optional[float] = None
     entity_similarity: Optional[float] = None
     category_similarity: Optional[float] = None
-    clip_similarity: Optional[float] = None
-    dinov2_similarity: Optional[float] = None
-   
     brightness_similarity: Optional[float] = None
     contrast_similarity: Optional[float] = None
     saturation_similarity: Optional[float] = None
     edge_density_similarity: Optional[float] = None
     sharpness_similarity: Optional[float] = None
+    dreamsim_similarity: Optional[float] = None
 
     # RGB Similarities
     rgb_hist_std_similarity: Optional[float] = None
@@ -317,9 +306,26 @@ class ImageResponse(ImageBase):
     gabor_similarity: Optional[float] = None
     ccv_similarity: Optional[float] = None
     zernike_similarity: Optional[float] = None
-    geometric_similarity: Optional[float] = None
+    geo_similarity: Optional[float] = None
     tamura_similarity: Optional[float] = None
     edge_orientation_similarity: Optional[float] = None
+    glcm_similarity: Optional[float] = None
+    wavelet_similarity: Optional[float] = None
+    correlogram_similarity: Optional[float] = None
+    ehd_similarity: Optional[float] = None
+    cld_similarity: Optional[float] = None
+    spm_similarity: Optional[float] = None
+    saliency_similarity: Optional[float] = None
+    
+    # UI/Visualization URLs
+    previewUrl: Optional[str] = None
+    histogramPreviewUrl: Optional[str] = None
+    hogPreviewUrl: Optional[str] = None
+    huPreviewUrl: Optional[str] = None
+    cellColorPreviewUrl: Optional[str] = None
+    lbpPreviewUrl: Optional[str] = None
+    gaborPreviewUrl: Optional[str] = None
+    ccvPreviewUrl: Optional[str] = None
     
     created_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
@@ -328,4 +334,10 @@ class SearchResponse(BaseModel):
     """Search response schema including query image features and optional comparison results"""
     query_image: ImageBase
     results: List[ImageResponse]
-    gt_results: Optional[List[ImageResponse]] = None
+
+class PaginatedImageResponse(BaseModel):
+    total: int
+    items: List[ImageResponse]
+    page: int
+    size: int
+    pages: int

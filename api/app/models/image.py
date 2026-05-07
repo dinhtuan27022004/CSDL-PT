@@ -121,19 +121,12 @@ class ImageMetadata(Base):
     spm_vector = Column(Vector(160)) # Spatial Pyramid Matching (1x1(32) + 2x2(32*4))
     saliency_vector = Column(Vector(32)) # Features from Salient regions
     
-    clip_vector = Column(Vector(768)) # CLIP Large Vector
-    dinov2_vector = Column(Vector(1536)) # DINOv2 Giant Vector
-    siglip_vector = Column(Vector(768)) # SigLIP Base Vector
-    convnext_vector = Column(Vector(1024)) # ConvNeXt V2 Base Vector
-    efficientnet_vector = Column(Vector(2560)) # EfficientNet-B7 Vector
-    dreamsim_vector = Column(Vector(1792)) # DreamSim Ensemble Vector (Actual: 1792)
-    sam_vector = Column(Vector(12544)) # SAM ViT-B High-Fidelity Vector (256x7x7)
-    
     # Semantic features from LLM
     category = Column(String(100))
     description = Column(Text)
     entities = Column(JSONB) # List of detected entities (Postgres JSONB for search)
     llm_embedding = Column(Vector(1024)) # BGE-M3 embedding size
+    dreamsim_vector = Column(Vector(1792), nullable=True) # DreamSim features
     
     file_path = Column(Text)
     hog_vis_path = Column(Text)
@@ -143,6 +136,8 @@ class ImageMetadata(Base):
     gabor_vis_path = Column(Text)
     ccv_vis_path = Column(Text)
     histogram_vis_path = Column(Text)
+    
+    file_hash = Column(String(32), index=True, nullable=True) # MD5 hash for duplicate detection
     
     created_at = Column(DateTime, default=datetime.utcnow)
 

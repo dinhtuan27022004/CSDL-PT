@@ -1,7 +1,14 @@
+import os
+import gc
+import traceback
+import time
+import math
+import asyncio
 from pathlib import Path
 import uuid
 import json
-from typing import List, Optional, Dict, Any, Tuple
+import hashlib
+from typing import List, Optional, Dict, Any, Tuple, Set
 from sqlalchemy.orm import Session
 from ..repositories.image_repository import ImageRepository
 from .llm_service import LLMService
@@ -15,15 +22,6 @@ import cv2
 import numpy as np
 from PIL import Image
 from fastapi import UploadFile
-import torch
-from transformers import AutoImageProcessor, AutoModel, CLIPProcessor, CLIPModel, SamModel, SamProcessor, EfficientNetModel, ConvNextV2Model
-import torch.nn.functional as F
-import time
-import asyncio
-import os
-import gc
-import math
-from huggingface_hub import login
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from skimage.feature import hog, local_binary_pattern, graycomatrix, graycoprops
 from skimage import exposure
@@ -118,6 +116,8 @@ def _extract_color_moments(img_bgr: np.ndarray) -> List[float]:
     return moments
 
 def _extract_lbp(img_bgr: np.ndarray, visualizations_dir: Path, filename: Optional[str] = None) -> Tuple[List[float], Optional[str]]:
+    if filename:
+        filename = os.path.basename(filename)
     img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     img_std = cv2.resize(img_gray, (256, 256))
     cells = 4
@@ -146,6 +146,8 @@ def _extract_lbp(img_bgr: np.ndarray, visualizations_dir: Path, filename: Option
 
 def _extract_all_color_features(img_bgr: np.ndarray, visualizations_dir: Path, filename: Optional[str] = None) -> Dict[str, Any]:
     """Unified extractor for all 7 spaces and 3 assignment methods"""
+    if filename:
+        filename = os.path.basename(filename)
     bins = 8
     spaces = {
         "rgb": cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB),
@@ -222,35 +224,70 @@ def _extract_all_color_features(img_bgr: np.ndarray, visualizations_dir: Path, f
                 cell_vec.extend(avg.tolist() if not is_gray else avg)
         results[f"cell_{name}_vector"] = cell_vec
 
-    # --- Visualization ---
-    vis_path = None
+    # --- Visualization (21 separate images) ---
+    vis_paths = {}
+    cell_color_vis_path = None
     if filename:
         try:
-            vis_filename = f"multi_hist_{filename}.png"
-            full_vis_path = visualizations_dir / vis_filename
-            
-            fig, axes = plt.subplots(len(spaces), 3, figsize=(15, 2 * len(spaces)))
+            # 1. Histogram Grid (21 images)
             for idx, (name, img) in enumerate(spaces.items()):
-                # Plot Std, Interp, Gauss for first channel (or gray)
-                h_std = results[f"{name}_hist_std"][:bins]
-                h_interp = results[f"{name}_hist_interp"][:bins]
-                h_gauss = results[f"{name}_hist_gauss"][:bins]
+                is_gray = (name == "gray")
+                n_channels = 1 if is_gray else 3
                 
-                axes[idx, 0].bar(range(bins), h_std, color='blue', alpha=0.6)
-                axes[idx, 0].set_title(f"{name.upper()} Std")
-                axes[idx, 1].bar(range(bins), h_interp, color='green', alpha=0.6)
-                axes[idx, 1].set_title(f"{name.upper()} Interp")
-                axes[idx, 2].bar(range(bins), h_gauss, color='red', alpha=0.6)
-                axes[idx, 2].set_title(f"{name.upper()} Gauss")
-            
-            plt.tight_layout()
-            plt.savefig(str(full_vis_path))
-            plt.close(fig)
-            vis_path = f"/static/visualizations/{vis_filename}"
+                for m_idx, method in enumerate(["std", "interp", "gauss"]):
+                    fig, ax = plt.subplots(figsize=(4, 3))
+                    data = results[f"{name}_hist_{method}"]
+                    
+                    colors = ['#ef4444', '#10b981', '#3b82f6'] # R, G, B
+                    if is_gray: colors = ['#94a3b8']
+                    elif name != "rgb": colors = ['#3b82f6', '#10b981', '#ef4444']
+                    
+                    for c in range(n_channels):
+                        channel_data = data[c*bins : (c+1)*bins]
+                        c_color = colors[c] if c < len(colors) else '#94a3b8'
+                        ax.plot(range(bins), channel_data, color=c_color, lw=2, alpha=0.8)
+                        ax.fill_between(range(bins), channel_data, color=c_color, alpha=0.1)
+                    
+                    ax.set_title(f"{name.upper()} {method.upper()}", fontsize=9, fontweight='bold', color='#94a3b8')
+                    ax.set_facecolor('#0f172a')
+                    ax.tick_params(colors='#64748b', labelsize=7)
+                    for spine in ax.spines.values(): spine.set_color('#334155')
+                    ax.grid(True, alpha=0.1, color='#94a3b8')
+                    
+                    vis_filename = f"hist_{name}_{method}_{filename}.png"
+                    full_vis_path = visualizations_dir / vis_filename
+                    plt.savefig(str(full_vis_path), facecolor='#020617', bbox_inches='tight', dpi=100)
+                    plt.close(fig)
+                    vis_paths[f"{name}_{method}"] = f"/static/visualizations/{vis_filename}"
+
+            # 2. Cell Color Visualization (4x4 Grid)
+            # Use RGB cell vector for visual representation
+            cell_rgb = results["cell_rgb_vector"]
+            if cell_rgb:
+                cell_size = 64
+                grid_img = np.zeros((256, 256, 3), dtype=np.uint8)
+                for i in range(4):
+                    for j in range(4):
+                        idx = (i * 4 + j) * 3
+                        r, g, b = cell_rgb[idx:idx+3]
+                        # Fill the cell
+                        grid_img[i*cell_size:(i+1)*cell_size, j*cell_size:(j+1)*cell_size] = [int(r), int(g), int(b)]
+                
+                # Draw grid lines for better look
+                for i in range(1, 4):
+                    cv2.line(grid_img, (0, i*cell_size), (256, i*cell_size), (255, 255, 255, 100), 1)
+                    cv2.line(grid_img, (i*cell_size, 0), (i*cell_size, 256), (255, 255, 255, 100), 1)
+                
+                cc_filename = f"cell_color_{filename}.png"
+                cc_full_path = visualizations_dir / cc_filename
+                cv2.imwrite(str(cc_full_path), cv2.cvtColor(grid_img, cv2.COLOR_RGB2BGR))
+                cell_color_vis_path = f"/static/visualizations/{cc_filename}"
+
         except Exception as e:
-            logger.warning(f"Multi-Hist vis failed: {e}")
+            logger.warning(f"Feature vis failed: {e}")
             
-    results["vis_path"] = vis_path
+    results["vis_path"] = json.dumps(vis_paths)
+    results["cell_color_vis_path"] = cell_color_vis_path
     return results
 
 def _extract_joint_rgb_histogram(img_bgr: np.ndarray) -> List[float]:
@@ -260,6 +297,8 @@ def _extract_joint_rgb_histogram(img_bgr: np.ndarray) -> List[float]:
     return hist
 
 def _extract_hog(img_bgr: np.ndarray, visualizations_dir: Path, filename: Optional[str] = None) -> Tuple[List[float], Optional[str]]:
+    if filename:
+        filename = os.path.basename(filename)
     img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     img_resized = cv2.resize(img_gray, (128, 128))
     fd, hog_image = hog(img_resized, orientations=8, pixels_per_cell=(16, 16),
@@ -277,6 +316,8 @@ def _extract_hog(img_bgr: np.ndarray, visualizations_dir: Path, filename: Option
     return fd.tolist(), vis_path
 
 def _extract_hu_moments(img_bgr: np.ndarray, visualizations_dir: Path, filename: Optional[str] = None) -> Tuple[List[float], Optional[str]]:
+    if filename:
+        filename = os.path.basename(filename)
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 128, 255, cv2.THRESH_BINARY)
     moments = cv2.moments(thresh)
@@ -294,6 +335,8 @@ def _extract_hu_moments(img_bgr: np.ndarray, visualizations_dir: Path, filename:
     return hu_log.tolist(), vis_path
 
 def _extract_gabor(img_bgr: np.ndarray, visualizations_dir: Path, filename: Optional[str] = None) -> Tuple[List[float], Optional[str]]:
+    if filename:
+        filename = os.path.basename(filename)
     img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     img_std = cv2.resize(img_gray, (256, 256))
     kernels = []
@@ -328,6 +371,8 @@ def _extract_gabor(img_bgr: np.ndarray, visualizations_dir: Path, filename: Opti
     return features, vis_path
 
 def _extract_ccv(img_bgr: np.ndarray, visualizations_dir: Path, filename: Optional[str] = None) -> Tuple[List[float], Optional[str]]:
+    if filename:
+        filename = os.path.basename(filename)
     img_small = cv2.resize(img_bgr, (256, 256))
     img_blur = cv2.GaussianBlur(img_small, (3, 3), 0)
     hsv = cv2.cvtColor(img_blur, cv2.COLOR_BGR2HSV)
@@ -433,6 +478,8 @@ def _extract_dominant_color(img_bgr: np.ndarray) -> List[float]:
     _, labels, centers = cv2.kmeans(pixels, 1, None, criteria, 10, flags)
     return centers[0].tolist()
 def _extract_cell_color(img_bgr: np.ndarray, visualizations_dir: Path, filename: Optional[str] = None) -> Tuple[List[float], Optional[str]]:
+    if filename:
+        filename = os.path.basename(filename)
     img_std = cv2.resize(img_bgr, (256, 256))
     cells = 4
     ch, cw = 64, 64
@@ -668,37 +715,6 @@ def _extract_saliency(img_bgr: np.ndarray) -> List[float]:
     norm = np.linalg.norm(saliency) + 1e-7
     return (saliency.flatten() / norm).tolist()
 
-def _extract_bovw(img_bgr: np.ndarray) -> List[float]:
-    """Bag of Visual Words (512 dim) using SIFT features"""
-    try:
-        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-        sift = cv2.SIFT_create(nfeatures=500)
-        kp, des = sift.detectAndCompute(gray, None)
-        
-        if des is None or len(des) == 0:
-            return [0.0] * 512
-            
-        # Try to load vocabulary if it exists
-        vocab_path = os.path.join(os.getcwd(), "vocab_512.npy")
-        if os.path.exists(vocab_path):
-            vocab = np.load(vocab_path)
-            # Find nearest visual words
-            from scipy.cluster.vq import vq
-            words, _ = vq(des, vocab)
-            hist, _ = np.histogram(words, bins=range(513), density=True)
-            return hist.tolist()
-        else:
-            # Fallback: Just return a normalized summary of descriptors if no vocab
-            # (This is not true BoVW but prevents errors)
-            summary = np.mean(des, axis=0)
-            # Pad to 512 if SIFT is 128
-            if len(summary) == 128:
-                summary = np.tile(summary, 4)
-            norm = np.linalg.norm(summary) + 1e-7
-            return (summary / norm).tolist()
-    except Exception as e:
-        logger.error(f"BoVW extraction failed: {e}")
-        return [0.0] * 512
 
 def _extract_correlogram(img_bgr: np.ndarray) -> List[float]:
     """Simplified Color Auto-Correlogram (8 bins, 4 distances)"""
@@ -742,384 +758,64 @@ class ImageService:
         # Use ThreadPool for traditional features on Windows to save RAM
         self.cpu_executor = ThreadPoolExecutor(max_workers=min(32, os.cpu_count() or 4))
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        
-        # Login to HuggingFace Hub for higher rate limits
-        if hasattr(self.settings, 'hf_token') and self.settings.hf_token:
-            try:
-                login(token=self.settings.hf_token)
-                logger.info("Successfully logged in to HuggingFace Hub")
-            except Exception as e:
-                logger.warning(f"Failed to login to HuggingFace Hub: {e}")
-        
         # Models are loaded dynamically during batch processing
-        self.clip_model = None
-        self.clip_processor = None
-        self.dinov2_model = None
-        self.dinov2_processor = None
-        self.siglip_model = None
-        self.siglip_processor = None
-        self.convnext_model = None
-        self.convnext_processor = None
-        self.efficientnet_model = None
-        self.efficientnet_processor = None
-        self.dreamsim_model = None
-        self.dreamsim_preprocess = None
-        self.sam_model = None
-        self.sam_processor = None
 
-    def _load_clip(self):
-        """Loads CLIP model into GPU memory"""
-        if self.clip_model is not None:
-            return
-        logger.info(f"Loading CLIP model: {self.settings.clip_model_name} on {self.device}...")
-        try:
-            self.clip_model = CLIPModel.from_pretrained(self.settings.clip_model_name, local_files_only=True, low_cpu_mem_usage=True).to(self.device)
-            self.clip_processor = CLIPProcessor.from_pretrained(self.settings.clip_model_name, local_files_only=True, low_cpu_mem_usage=True)
-            logger.info("CLIP model loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load CLIP model: {e}")
-
-    def _unload_clip(self):
-        """Unloads CLIP model and frees GPU memory"""
-        if self.clip_model is not None:
-            logger.info("Unloading CLIP model...")
-            del self.clip_model
-            del self.clip_processor
-            self.clip_model = None
-            self.clip_processor = None
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            gc.collect()
-            logger.info("CLIP model unloaded")
-
-    def _load_dinov2(self):
-        """Loads DINOv2 model into GPU memory"""
-        if self.dinov2_model is not None:
-            return
-        logger.info(f"Loading DINOv2 model: {self.settings.dinov2_model_name} on {self.device}...")
-        try:
-            self.dinov2_processor = AutoImageProcessor.from_pretrained(self.settings.dinov2_model_name, local_files_only=True)
-            self.dinov2_model = AutoModel.from_pretrained(self.settings.dinov2_model_name, local_files_only=True, low_cpu_mem_usage=True).to(self.device)
-            logger.info("DINOv2 model loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load DINOv2 model: {e}")
-
-    def _unload_dinov2(self):
-        """Unloads DINOv2 model and frees GPU memory"""
-        if self.dinov2_model is not None:
-            logger.info("Unloading DINOv2 model...")
-            del self.dinov2_model
-            del self.dinov2_processor
-            self.dinov2_model = None
-            self.dinov2_processor = None
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            gc.collect()
-            logger.info("DINOv2 model unloaded")
-
-    def _extract_clip_batch(self, images_pil: List[Image.Image]) -> List[List[float]]:
-        """Extract CLIP features from a batch of images (Lane 3)"""
-        if not self.clip_model or not self.clip_processor or not images_pil:
-            return [[0.0] * 768] * len(images_pil)
-        try:
-            all_features = []
-            batch_size = 32
-            for i in range(0, len(images_pil), batch_size):
-                logger.info(f"CLIP Processing batch {i // batch_size + 1} of {math.ceil(len(images_pil) / batch_size)}")
-                chunk = images_pil[i:i + batch_size]
-                inputs = self.clip_processor(images=chunk, return_tensors="pt", padding=True).to(self.device)
-                with torch.no_grad():
-                    outputs = self.clip_model.get_image_features(**inputs)
-                    
-                    if hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
-                        image_embeds = outputs.pooler_output
-                    elif hasattr(outputs, "image_embeds") and outputs.image_embeds is not None:
-                        image_embeds = outputs.image_embeds
-                    elif hasattr(outputs, "last_hidden_state") and outputs.last_hidden_state is not None:
-                        image_embeds = outputs.last_hidden_state[:, 0]
-                    else:
-                        image_embeds = outputs
-                        
-                    image_embeds = image_embeds / (image_embeds.norm(p=2, dim=-1, keepdim=True) + 1e-7)
-                    all_features.extend(image_embeds.cpu().numpy().tolist())
-            return all_features
-        except Exception as e:
-            logger.error(f"Batch CLIP extraction failed: {e}")
-            return [[0.0] * 768] * len(images_pil)
-
-    def _extract_dinov2_batch(self, images_pil: List[Image.Image]) -> List[List[float]]:
-        """Extract DINOv2 features from a batch of images (Lane 3)"""
-        if not self.dinov2_model or not self.dinov2_processor or not images_pil:
-            return [[0.0] * 1536] * len(images_pil)
-        try:
-            all_features = []
-            batch_size = 16
-            for i in range(0, len(images_pil), batch_size):
-                logger.info(f"DINOv2 Processing batch {i // batch_size + 1} of {math.ceil(len(images_pil) / batch_size)}")
-                chunk = images_pil[i:i + batch_size]
-                inputs = self.dinov2_processor(images=chunk, return_tensors="pt").to(self.device)
-                with torch.no_grad():
-                    outputs = self.dinov2_model(**inputs)
-                    if hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
-                        embeddings = outputs.pooler_output
-                    else:
-                        embeddings = outputs.last_hidden_state[:, 0]
-                    embeddings = embeddings / (embeddings.norm(p=2, dim=-1, keepdim=True) + 1e-7)
-                    all_features.extend(embeddings.cpu().numpy().tolist())
-            return all_features
-        except Exception as e:
-            logger.error(f"Batch DINOv2 extraction failed: {e}")
-            return [[0.0] * 1536] * len(images_pil)
-
-    # --- SigLIP ---
-    def _load_siglip(self):
-        """Loads SigLIP model into GPU memory"""
-        if self.siglip_model is not None:
-            return
-        logger.info(f"Loading SigLIP model: {self.settings.siglip_model_name} on {self.device}...")
-        try:
-            self.siglip_model = AutoModel.from_pretrained(self.settings.siglip_model_name, low_cpu_mem_usage=True).to(self.device)
-            self.siglip_processor = AutoImageProcessor.from_pretrained(self.settings.siglip_model_name)
-            logger.info("SigLIP model loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load SigLIP model: {e}")
-
-    def _unload_siglip(self):
-        if self.siglip_model is not None:
-            logger.info("Unloading SigLIP model...")
-            del self.siglip_model
-            del self.siglip_processor
-            self.siglip_model = None
-            self.siglip_processor = None
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            gc.collect()
-            logger.info("SigLIP model unloaded")
-
-    def _extract_siglip_batch(self, images_pil: List[Image.Image]) -> List[List[float]]:
-        """Extract SigLIP features from a batch of images"""
-        if not self.siglip_model or not self.siglip_processor or not images_pil:
-            return [[0.0] * 768] * len(images_pil)
-        try:
-            all_features = []
-            batch_size = 32
-            for i in range(0, len(images_pil), batch_size):
-                logger.info(f"SigLIP Processing batch {i // batch_size + 1} of {math.ceil(len(images_pil) / batch_size)}")
-                chunk = images_pil[i:i + batch_size]
-                inputs = self.siglip_processor(images=chunk, return_tensors="pt").to(self.device)
-                with torch.no_grad():
-                    outputs = self.siglip_model.get_image_features(**inputs)
-                    if hasattr(outputs, 'pooler_output') and outputs.pooler_output is not None:
-                        embeds = outputs.pooler_output
-                    elif isinstance(outputs, torch.Tensor):
-                        embeds = outputs
-                    else:
-                        embeds = outputs.last_hidden_state[:, 0]
-                    embeds = embeds / (embeds.norm(p=2, dim=-1, keepdim=True) + 1e-7)
-                    all_features.extend(embeds.cpu().numpy().tolist())
-            return all_features
-        except Exception as e:
-            logger.error(f"Batch SigLIP extraction failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return [[0.0] * 768] * len(images_pil)
-
-    # --- ConvNeXt V2 ---
-    def _load_convnext(self):
-        """Loads ConvNeXt V2 model into GPU memory"""
-        if self.convnext_model is not None:
-            return
-        logger.info(f"Loading ConvNeXt V2 model: {self.settings.convnext_model_name} on {self.device}...")
-        try:
-            self.convnext_model = ConvNextV2Model.from_pretrained(self.settings.convnext_model_name, low_cpu_mem_usage=True).to(self.device)
-            self.convnext_processor = AutoImageProcessor.from_pretrained(self.settings.convnext_model_name)
-            logger.info("ConvNeXt V2 model loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load ConvNeXt V2 model: {e}")
-
-    def _unload_convnext(self):
-        if self.convnext_model is not None:
-            logger.info("Unloading ConvNeXt V2 model...")
-            del self.convnext_model
-            del self.convnext_processor
-            self.convnext_model = None
-            self.convnext_processor = None
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            gc.collect()
-            logger.info("ConvNeXt V2 model unloaded")
-
-    def _extract_convnext_batch(self, images_pil: List[Image.Image]) -> List[List[float]]:
-        """Extract ConvNeXt V2 features from a batch of images"""
-        if not self.convnext_model or not self.convnext_processor or not images_pil:
-            return [[0.0] * 1024] * len(images_pil)
-        try:
-            all_features = []
-            batch_size = 16
-            for i in range(0, len(images_pil), batch_size):
-                logger.info(f"ConvNeXt Processing batch {i // batch_size + 1} of {math.ceil(len(images_pil) / batch_size)}")
-                chunk = images_pil[i:i + batch_size]
-                inputs = self.convnext_processor(images=chunk, return_tensors="pt").to(self.device)
-                with torch.no_grad():
-                    outputs = self.convnext_model(**inputs)
-                    if hasattr(outputs, 'pooler_output') and outputs.pooler_output is not None:
-                        embeds = outputs.pooler_output
-                    else:
-                        embeds = outputs.last_hidden_state.mean(dim=[2, 3])
-                    embeds = embeds / (embeds.norm(p=2, dim=-1, keepdim=True) + 1e-7)
-                    all_features.extend(embeds.cpu().numpy().tolist())
-            return all_features
-        except Exception as e:
-            logger.error(f"Batch ConvNeXt extraction failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return [[0.0] * 1024] * len(images_pil)
-
-    # --- EfficientNet ---
-    def _load_efficientnet(self):
-        """Loads EfficientNet-B7 model into GPU memory"""
-        if self.efficientnet_model is not None:
-            return
-        logger.info(f"Loading EfficientNet model: {self.settings.efficientnet_model_name} on {self.device}...")
-        try:
-            self.efficientnet_model = EfficientNetModel.from_pretrained(self.settings.efficientnet_model_name, low_cpu_mem_usage=True).to(self.device)
-            self.efficientnet_processor = AutoImageProcessor.from_pretrained(self.settings.efficientnet_model_name)
-            logger.info("EfficientNet model loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load EfficientNet model: {e}")
-
-    def _unload_efficientnet(self):
-        if self.efficientnet_model is not None:
-            logger.info("Unloading EfficientNet model...")
-            del self.efficientnet_model
-            del self.efficientnet_processor
-            self.efficientnet_model = None
-            self.efficientnet_processor = None
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            gc.collect()
-            logger.info("EfficientNet model unloaded")
-
-    def _extract_efficientnet_batch(self, images_pil: List[Image.Image]) -> List[List[float]]:
-        """Extract EfficientNet-B7 features from a batch of images"""
-        if not self.efficientnet_model or not self.efficientnet_processor or not images_pil:
-            return [[0.0] * 2560] * len(images_pil)
-        try:
-            all_features = []
-            batch_size = 8
-            for i in range(0, len(images_pil), batch_size):
-                logger.info(f"EfficientNet Processing batch {i // batch_size + 1} of {math.ceil(len(images_pil) / batch_size)}")
-                chunk = images_pil[i:i + batch_size]
-                inputs = self.efficientnet_processor(images=chunk, return_tensors="pt").to(self.device)
-                with torch.no_grad():
-                    outputs = self.efficientnet_model(**inputs)
-                    if hasattr(outputs, 'pooler_output') and outputs.pooler_output is not None:
-                        embeds = outputs.pooler_output
-                    else:
-                        embeds = outputs.last_hidden_state.mean(dim=[2, 3])
-                    embeds = embeds / (embeds.norm(p=2, dim=-1, keepdim=True) + 1e-7)
-                    all_features.extend(embeds.cpu().numpy().tolist())
-            return all_features
-        except Exception as e:
-            logger.error(f"Batch EfficientNet extraction failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return [[0.0] * 2560] * len(images_pil)
-
-    # --- DreamSim ---
-    def _load_dreamsim(self):
-        """Loads DreamSim Ensemble model into GPU memory"""
-        if self.dreamsim_model is not None:
-            return
-        logger.info(f"Loading DreamSim Ensemble model on {self.device}...")
-        try:
-            from dreamsim import dreamsim
-            self.dreamsim_model, self.dreamsim_preprocess = dreamsim(pretrained=True, device=self.device)
-            logger.info("DreamSim model loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load DreamSim model: {e}")
-
-    def _unload_dreamsim(self):
-        if self.dreamsim_model is not None:
-            logger.info("Unloading DreamSim model...")
-            del self.dreamsim_model
-            del self.dreamsim_preprocess
-            self.dreamsim_model = None
-            self.dreamsim_preprocess = None
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            gc.collect()
-            logger.info("DreamSim model unloaded")
-
-    def _extract_dreamsim_batch(self, images_pil: List[Image.Image]) -> List[List[float]]:
-        """Extract DreamSim Ensemble features from a batch of images"""
-        if not self.dreamsim_model or not self.dreamsim_preprocess or not images_pil:
-            return [[0.0] * 1792] * len(images_pil)
-        try:
-            all_features = []
-            for i, img in enumerate(images_pil):
-                logger.info(f"DreamSim Processing image {i + 1} of {len(images_pil)}")
-                preprocessed = self.dreamsim_preprocess(img).to(self.device)
-                with torch.no_grad():
-                    embedding = self.dreamsim_model.embed(preprocessed)
-                    embedding = embedding / (embedding.norm(p=2, dim=-1, keepdim=True) + 1e-7)
-                    all_features.append(embedding.cpu().numpy().flatten().tolist())
-            return all_features
-        except Exception as e:
-            logger.error(f"Batch DreamSim extraction failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return [[0.0] * 1792] * len(images_pil)
-
-    # --- SAM (Segment Anything) ---
-    def _load_sam(self):
-        """Loads SAM ViT-B model into GPU memory"""
-        if self.sam_model is not None:
-            return
-        logger.info(f"Loading SAM model: {self.settings.sam_model_name} on {self.device}...")
-        try:
-            self.sam_model = SamModel.from_pretrained(self.settings.sam_model_name, low_cpu_mem_usage=True).to(self.device)
-            self.sam_processor = SamProcessor.from_pretrained(self.settings.sam_model_name)
-            logger.info("SAM model loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load SAM model: {e}")
-
-    def _unload_sam(self):
-        if self.sam_model is not None:
-            logger.info("Unloading SAM model...")
-            del self.sam_model
-            del self.sam_processor
-            self.sam_model = None
-            self.sam_processor = None
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            gc.collect()
-            logger.info("SAM model unloaded")
-
-    def _extract_sam_batch(self, images_pil: List[Image.Image]) -> List[List[float]]:
-        """Extract SAM high-fidelity features from a batch of images (256x7x7 = 12544-dim)"""
-        if not self.sam_model or not self.sam_processor or not images_pil:
-            return [[0.0] * 12544] * len(images_pil)
-        try:
-            all_features = []
-            for i, img in enumerate(images_pil):
-                logger.info(f"SAM Processing image {i + 1} of {len(images_pil)}")
-                inputs = self.sam_processor(images=img, return_tensors="pt").to(self.device)
-                with torch.no_grad():
-                    outputs = self.sam_model.get_image_embeddings(inputs["pixel_values"])
-                    # outputs shape: (1, 256, 64, 64) → pool to (1, 256, 7, 7) → flatten to 12544
-                    pooled = F.adaptive_avg_pool2d(outputs, (7, 7))
-                    flat = pooled.flatten(start_dim=1)
-                    flat = flat / (flat.norm(p=2, dim=-1, keepdim=True) + 1e-7)
-                    all_features.append(flat.cpu().numpy().flatten().tolist())
-            return all_features
-        except Exception as e:
-            logger.error(f"Batch SAM extraction failed: {e}")
-            return [[0.0] * 12544] * len(images_pil)
-
-    def get_images(self, db: Session, limit: int = 500, offset: int = 0) -> List[ImageMetadata]:
+    def get_images(self, db: Session, limit: int = 10000, offset: int = 0) -> List[ImageMetadata]:
         return self.repository.get_all(db, limit=limit, offset=offset)
+        
+    async def recompute_vlm_missing(self, db: Session, force: bool = False):
+        """Sync VLM analysis and embeddings for all images in the uploads folder"""
+        # 1. Get records for images in the upload folder
+        records = db.query(ImageMetadata).filter(ImageMetadata.file_path.ilike("%/static/uploads/%")).all()
+            
+        if not records:
+            return {"message": "No images found in uploads folder", "count": 0}
+            
+        n_total = len(records)
+        logger.info(f"Syncing VLM/Embeddings for {n_total} images in uploads (force={force})")
+        
+        batch_size = 1000
+        processed_count = 0
+        
+        for i in range(0, n_total, batch_size):
+            sub_batch = records[i : i + batch_size]
+            images_bytes, filenames, valid_records = [], [], []
+            
+            for record in sub_batch:
+                rel_path = record.file_path.replace("/static/uploads/", "")
+                phys_path = self.settings.uploads_dir / rel_path
+                if phys_path.exists():
+                    try:
+                        with open(phys_path, "rb") as f:
+                            images_bytes.append(f.read())
+                        filenames.append(record.file_name)
+                        valid_records.append(record)
+                    except Exception as e: logger.error(f"Error reading {phys_path}: {e}")
+            
+            if not images_bytes: continue
+                
+            try:
+                # 2. VLM (Uses cache internally)
+                vlm_results = await self.llm_service.analyze_vision_batch(images_bytes, filenames)
+                
+                # 3. LLM Text Embedding
+                texts = [f"Category: {r['category']}. Entities: {r['entities']}. Description: {r['description']}" for r in vlm_results]
+                llm_embeddings = self.llm_service.extract_embeddings_batch(texts)
+                
+                # 4. Update Database
+                for j, record in enumerate(valid_records):
+                    if j < len(vlm_results):
+                        record.category, record.description, record.entities = vlm_results[j]["category"], vlm_results[j]["description"], vlm_results[j]["entities"]
+                        if j < len(llm_embeddings): record.llm_embedding = llm_embeddings[j]
+                
+                db.commit()
+                processed_count += len(valid_records)
+                logger.info(f"Synced batch {i//batch_size + 1}/{math.ceil(n_total/batch_size)}")
+            except Exception as e:
+                db.rollback()
+                logger.error(f"Batch sync failed: {e}")
+                
+        return {"message": "VLM Sync Completed", "total": n_total, "processed": processed_count}
 
     async def extract_features_batch(
         self, 
@@ -1129,15 +825,12 @@ class ImageService:
         required_features: Optional[Set[str]] = None
     ) -> List[ImageMetadata]:
         """Memory-safe concurrent feature extraction using 4-lane pipeline with selective extraction support"""
-        # Determine if we need to run specific lanes or models
         run_lane2 = True # API Lane (Metadata) usually always needed for display
-        run_lane3 = True # GPU Lane
+        run_lane3 = True # DreamSim Lane
         run_lane4 = True # LLM Lane
         
         if required_features is not None:
-            # Check if any GPU models are needed
-            gpu_models = {"clip", "dinov2", "siglip", "convnext", "efficientnet", "dreamsim", "sam"}
-            run_lane3 = any(f in required_features for f in gpu_models)
+            run_lane3 = "dreamsim" in required_features
             run_lane4 = "semantic" in required_features or force_llm
             # Lane 1 (CPU) is light, we always run it to get basic stats
 
@@ -1160,8 +853,6 @@ class ImageService:
             cached_vectors[i]["height"] = img.shape[0]
 
         all_indices = list(range(n))
-        
-        logger.info(f"Processing Features: All 7 GPU models will be extracted for {n} images")
 
         loop = asyncio.get_running_loop()
 
@@ -1198,8 +889,7 @@ class ImageService:
                     loop.run_in_executor(self.cpu_executor, _extract_ehd, img_smalls[i]),
                     loop.run_in_executor(self.cpu_executor, _extract_cld, img_smalls[i]),
                     loop.run_in_executor(self.cpu_executor, _extract_spm, img_smalls[i]),
-                    loop.run_in_executor(self.cpu_executor, _extract_saliency, img_smalls[i]),
-                    loop.run_in_executor(self.cpu_executor, _extract_bovw, img_smalls[i])
+                    loop.run_in_executor(self.cpu_executor, _extract_saliency, img_smalls[i])
                 ]
                 try:
                     image_features = await asyncio.gather(*t)
@@ -1225,118 +915,49 @@ class ImageService:
             return res
 
         # ============================================================
-        # LANE 3: Sequential GPU Model Extraction (runs in parallel with Lane 1 & 2)
-        # Models: CLIP → DINOv2 → SigLIP → ConvNeXt → EfficientNet → DreamSim → SAM
+        # LANE 3: DreamSim GPU Feature Extraction (runs in parallel)
         # ============================================================
-        async def run_gpu_lane():
-            if not run_lane3:
-                logger.info("Lane 3: Skipping all GPU models (not required by weights)")
-                return {m: [None] * n for m in ["clip", "dinov2", "siglip", "convnext", "efficientnet", "dreamsim", "sam"]}
+        def _run_dreamsim_sync(images_bytes_list):
+            try:
+                from dreamsim import dreamsim
+                import torch
+                from PIL import Image as PILImage
+                import io
+                
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                # Cache model in the class to avoid reloading every time
+                if not hasattr(self, '_dreamsim_model'):
+                    logger.info(f"Lane 3: Loading DreamSim model on {device}...")
+                    self._dreamsim_model, self._dreamsim_preprocess = dreamsim(pretrained=True, device=device)
+                
+                results = []
+                for img_bytes in images_bytes_list:
+                    img_pil = PILImage.open(io.BytesIO(img_bytes)).convert("RGB")
+                    img_tensor = self._dreamsim_preprocess(img_pil).to(device)
+                    with torch.no_grad():
+                        feat = self._dreamsim_model.embed(img_tensor)
+                    results.append(feat.cpu().numpy().flatten().tolist())
+                return results
+            except Exception as e:
+                logger.error(f"Lane 3 (DreamSim) failed in executor: {e}")
+                return [None] * len(images_bytes_list)
 
-            gpu_start = time.time()
-            results = {m: [None] * n for m in ["clip", "dinov2", "siglip", "convnext", "efficientnet", "dreamsim", "sam"]}
+        async def run_dreamsim_lane():
+            if not run_lane3: return [None] * n
+            logger.info("Lane 3: Scheduling DreamSim Feature Extraction...")
+            ds_start = time.time()
             
-            # Prepare PIL images once for all GPU models
-            batch_images = [Image.fromarray(cv2.cvtColor(img_smalls[i], cv2.COLOR_BGR2RGB)) for i in all_indices]
+            # Use run_in_executor to avoid blocking the main event loop
+            results = await loop.run_in_executor(self.executor, _run_dreamsim_sync, images_bytes)
             
-            # --- Model 1: CLIP ---
-            if required_features is None or "clip" in required_features:
-                model_start = time.time()
-                self._load_clip()
-                clip_vectors = self._extract_clip_batch(batch_images)
-                for idx, vec in zip(all_indices, clip_vectors):
-                    results["clip"][idx] = vec
-                self._unload_clip()
-                logger.info(f"Lane 3: CLIP completed in {time.time() - model_start:.2f}s")
-            else:
-                logger.info("Lane 3: Skipping CLIP (weight is 0)")
-            
-            # --- Model 2: DINOv2 ---
-            if required_features is None or "dinov2" in required_features:
-                model_start = time.time()
-                self._load_dinov2()
-                dinov2_vectors = self._extract_dinov2_batch(batch_images)
-                for idx, vec in zip(all_indices, dinov2_vectors):
-                    results["dinov2"][idx] = vec
-                self._unload_dinov2()
-                logger.info(f"Lane 3: DINOv2 completed in {time.time() - model_start:.2f}s")
-            else:
-                logger.info("Lane 3: Skipping DINOv2 (weight is 0)")
-            
-            # --- Model 3: SigLIP ---
-            if required_features is None or "siglip" in required_features:
-                model_start = time.time()
-                self._load_siglip()
-                siglip_vectors = self._extract_siglip_batch(batch_images)
-                for idx, vec in zip(all_indices, siglip_vectors):
-                    results["siglip"][idx] = vec
-                self._unload_siglip()
-                logger.info(f"Lane 3: SigLIP completed in {time.time() - model_start:.2f}s")
-            else:
-                logger.info("Lane 3: Skipping SigLIP")
-            
-            # --- Model 4: ConvNeXt V2 ---
-            if required_features is None or "convnext" in required_features:
-                model_start = time.time()
-                self._load_convnext()
-                convnext_vectors = self._extract_convnext_batch(batch_images)
-                for idx, vec in zip(all_indices, convnext_vectors):
-                    results["convnext"][idx] = vec
-                self._unload_convnext()
-                logger.info(f"Lane 3: ConvNeXt V2 completed in {time.time() - model_start:.2f}s")
-            else:
-                logger.info("Lane 3: Skipping ConvNeXt V2")
-            
-            # --- Model 5: EfficientNet ---
-            if required_features is None or "efficientnet" in required_features:
-                model_start = time.time()
-                self._load_efficientnet()
-                efficientnet_vectors = self._extract_efficientnet_batch(batch_images)
-                for idx, vec in zip(all_indices, efficientnet_vectors):
-                    results["efficientnet"][idx] = vec
-                self._unload_efficientnet()
-                logger.info(f"Lane 3: EfficientNet completed in {time.time() - model_start:.2f}s")
-            else:
-                logger.info("Lane 3: Skipping EfficientNet")
-            
-            # --- Model 6: DreamSim ---
-            if required_features is None or "dreamsim" in required_features:
-                model_start = time.time()
-                self._load_dreamsim()
-                dreamsim_vectors = self._extract_dreamsim_batch(batch_images)
-                for idx, vec in zip(all_indices, dreamsim_vectors):
-                    results["dreamsim"][idx] = vec
-                self._unload_dreamsim()
-                logger.info(f"Lane 3: DreamSim completed in {time.time() - model_start:.2f}s")
-            else:
-                logger.info("Lane 3: Skipping DreamSim")
-            
-            # --- Model 7: SAM ---
-            if required_features is None or "sam" in required_features:
-                model_start = time.time()
-                self._load_sam()
-                sam_vectors = self._extract_sam_batch(batch_images)
-                for idx, vec in zip(all_indices, sam_vectors):
-                    results["sam"][idx] = vec
-                self._unload_sam()
-                logger.info(f"Lane 3: SAM completed in {time.time() - model_start:.2f}s")
-            else:
-                logger.info("Lane 3: Skipping SAM")
-            
-            # Clean up PIL images
-            del batch_images
-            gc.collect()
-            
-            logger.info(f"Lane 3: All 7 GPU Models Completed in {time.time() - gpu_start:.2f}s")
+            logger.info(f"Lane 3: DreamSim Completed in {time.time() - ds_start:.2f}s")
             return results
 
-        # ============================================================
-        # EXECUTE: Lane 1, 2, 3 in parallel
-        # ============================================================
-        lane1_task = asyncio.create_task(run_cpu_lane())
-        lane2_task = asyncio.create_task(run_api_lane())
-        lane3_task = asyncio.create_task(run_gpu_lane())
-        
+        # Start tasks
+        lane1_task = run_cpu_lane()
+        lane2_task = run_api_lane()
+        lane3_task = run_dreamsim_lane()
+
         # Wait for all 3 lanes to complete
         lane1_res, lane2_res, lane3_res = await asyncio.gather(lane1_task, lane2_task, lane3_task)
         
@@ -1355,7 +976,7 @@ class ImageService:
             for vd in lane2_res:
                 combined = f"Category: {vd.get('category')}. Entities: {vd.get('entities')}. Description: {vd.get('description')}"
                 texts_to_embed.append(combined)
-            llm_embeddings = self.llm_service.extract_embeddings_batch(texts_to_embed)
+            llm_embeddings = self.llm_service.extract_embeddings_batch(texts_to_embed, filenames=filenames)
             logger.info(f"Lane 4: LLM Text Embedding Completed in {time.time() - lane4_start:.2f}s")
         else:
             logger.info("Lane 4: Skipping LLM Embedding (not required by weights)")
@@ -1372,13 +993,6 @@ class ImageService:
                 # Debugging dimensions
                 if i == 0:
                     logger.info(f"DEBUG: Vector dimensions for image 0:")
-                    logger.info(f"  - CLIP: {len(lane3_res['clip'][i]) if lane3_res['clip'][i] is not None else 'Skipped'}")
-                    logger.info(f"  - DINOv2: {len(lane3_res['dinov2'][i]) if lane3_res['dinov2'][i] is not None else 'Skipped'}")
-                    logger.info(f"  - SigLIP: {len(lane3_res['siglip'][i]) if lane3_res['siglip'][i] is not None else 'Skipped'}")
-                    logger.info(f"  - ConvNeXt: {len(lane3_res['convnext'][i]) if lane3_res['convnext'][i] is not None else 'Skipped'}")
-                    logger.info(f"  - EfficientNet: {len(lane3_res['efficientnet'][i]) if lane3_res['efficientnet'][i] is not None else 'Skipped'}")
-                    logger.info(f"  - DreamSim: {len(lane3_res['dreamsim'][i]) if lane3_res['dreamsim'][i] is not None else 'Skipped'}")
-                    logger.info(f"  - SAM: {len(lane3_res['sam'][i]) if lane3_res['sam'][i] is not None else 'Skipped'}")
                     logger.info(f"  - LLM: {len(llm_embeddings[i]) if llm_embeddings[i] is not None else 'Skipped'}")
 
                 color_feat = c_res[4]
@@ -1471,6 +1085,7 @@ class ImageService:
                     cell_gray_vector = color_feat["cell_gray_vector"],
 
                     histogram_vis_path = color_feat["vis_path"],
+                    cell_color_vis_path = color_feat["cell_color_vis_path"],
                     hog_vector = c_res[5][0],
                     hog_vis_path = c_res[5][1],
                     hu_moments_vector = c_res[6][0],
@@ -1495,7 +1110,6 @@ class ImageService:
                     cld_vector = c_res[21],
                     spm_vector = c_res[22],
                     saliency_vector = c_res[23],
-                    bovw_vector = c_res[24],
 
                     width = cached_vectors[i].get("width"),
                     height = cached_vectors[i].get("height"),
@@ -1503,13 +1117,7 @@ class ImageService:
                     description = v_res.get("description"),
                     entities = v_res.get("entities"),
                     llm_embedding = llm_embeddings[i],
-                    clip_vector = lane3_res["clip"][i],
-                    dinov2_vector = lane3_res["dinov2"][i],
-                    siglip_vector = lane3_res["siglip"][i],
-                    convnext_vector = lane3_res["convnext"][i],
-                    efficientnet_vector = lane3_res["efficientnet"][i],
-                    dreamsim_vector = lane3_res["dreamsim"][i],
-                    sam_vector = lane3_res["sam"][i],
+                    dreamsim_vector = lane3_res[i],
                 ))
         except Exception as e:
             logger.error(f"Error during metadata assembly at index {i}: {e}")
@@ -1533,11 +1141,12 @@ class ImageService:
     async def process(
         self, 
         db: Session, 
-        files: List[UploadFile],
+        files: List[Any],
         force_llm: bool = False
     ) -> List[ImageMetadata]:
-        """Process multiple uploaded images using the batch pipeline"""
-        logger.info(f"Processing batch of {len(files)} images")
+        """Process multiple images (UploadFile or Tuple[bytes, str]) using the batch pipeline"""
+        n_total = len(files)
+        logger.info(f"Processing batch of {n_total} images")
         start_time = time.time()
         
         batch_size = 128
@@ -1547,16 +1156,36 @@ class ImageService:
             batch_files = files[i:i+batch_size]
             images_data = []
             filenames = []
+            file_hashes = []
             
             for file in batch_files:
-                content = await file.read()
-                images_data.append(content)
-                filenames.append(file.filename)
+                if hasattr(file, "read"): # FastAPI UploadFile
+                    content = await file.read()
+                    filename = file.filename
+                else: # Tuple (bytes, filename)
+                    content, filename = file
                 
-            logger.info(f"--- Processing Sub-batch {i//batch_size + 1} / {math.ceil(len(files)/batch_size)} ---")
+                # Check for duplicates using MD5 hash
+                f_hash = hashlib.md5(content).hexdigest()
+                
+                # Fast database check
+                existing = db.query(ImageMetadata).filter(ImageMetadata.file_hash == f_hash).first()
+                if existing:
+                    logger.info(f"Skipping duplicate image: {filename} (Already exists as ID {existing.id})")
+                    continue
+                
+                images_data.append(content)
+                filenames.append(filename)
+                file_hashes.append(f_hash)
+                
+            if not images_data:
+                continue
+                
+            logger.info(f"--- Processing Sub-batch {i//batch_size + 1} / {math.ceil(n_total/batch_size)} ---")
             results_metadata = await self.extract_features_batch(images_data, filenames, force_llm=force_llm)
             
             for j, metadata in enumerate(results_metadata):
+                metadata.file_hash = file_hashes[j] # Save the hash
                 result = self.repository.create(db, metadata, images_data[j])
                 final_results.append(result)
             
@@ -1564,7 +1193,7 @@ class ImageService:
             images_data.clear()
             import gc
             gc.collect()
-            
+        
         logger.info(f"Batch processing completed {len(final_results)} images in {time.time() - start_time:.2f}s")
         return final_results
 
@@ -1584,16 +1213,11 @@ class ImageService:
             mode = getattr(search_settings, 'mode', 'optimized')
             
             if mode == "optimized":
-                target = getattr(search_settings, 'optimization_target', 'clip')
+                target = "optimized"
                 weights = self.repository._load_weights(target)
                 required_features = {k for k, v in weights.items() if v != 0}
                 
-                # IMPORTANT: If comparison mode is ON, we MUST extract the target model's features
-                # even if it has 0 weight in the optimized set
-                if getattr(search_settings, 'compare_with_gt', False):
-                    required_features.add(target)
-                
-                logger.info(f"Optimized mode ({target}): Required features = {required_features}")
+                logger.info(f"Optimized mode: Required features = {required_features}")
             elif mode == "manual":
                 weights = getattr(search_settings, 'weights', {})
                 required_features = {k for k, v in weights.items() if v > 0}
@@ -1608,7 +1232,7 @@ class ImageService:
                 force_llm=force_llm, 
                 required_features=required_features
             )
-            search_results, gt_search_results = self.repository.search(
+            search_results = self.repository.search(
                 db=db, 
                 query_metadata=query_metadata,
                 search_settings=search_settings,
@@ -1616,8 +1240,7 @@ class ImageService:
             )
             
             response_data = []
-            response_data = []
-            for row in search_results:
+            for idx, row in enumerate(search_results):
                 record = row[0]
                 total_sim = row[1]
                 row_dict = row._asdict()
@@ -1627,31 +1250,32 @@ class ImageService:
                 
                 # Map all similarity scores dynamically
                 for key, val in row_dict.items():
-                    if key.endswith('_sim'):
-                        field_name = key.replace('_sim', '_similarity')
-                        if key == "semantic_sim":
-                            res.semantic_similarity = round(float(val or 0.0) * 100.0, 2)
-                        elif hasattr(res, field_name):
-                            setattr(res, field_name, round(float(val or 0.0) * 100.0, 2))
+                    if key.endswith('_similarity') and key != 'similarity':
+                        if hasattr(res, key):
+                            setattr(res, key, float(val or 0.0))
                 
-                # Ensure existing specific mappings are correct
-                res.dominant_color_similarity = round(float(row_dict.get('dominant_color_sim', 0)) * 100.0, 2)
+                # Map Visualization URLs
+                mapping = {
+                    "hog_vis_path": "hogPreviewUrl",
+                    "hu_vis_path": "huPreviewUrl",
+                    "cell_color_vis_path": "cellColorPreviewUrl",
+                    "lbp_vis_path": "lbpPreviewUrl",
+                    "gabor_vis_path": "gaborPreviewUrl",
+                    "ccv_vis_path": "ccvPreviewUrl",
+                    "histogram_vis_path": "histogramPreviewUrl"
+                }
                 
+                for p_key, ui_key in mapping.items():
+                    val = getattr(record, p_key, None)
+                    if val:
+                        setattr(res, ui_key, val)
+                
+                res.previewUrl = record.file_path
                 response_data.append(res)
-            
-            gt_response_data = None
-            if gt_search_results:
-                gt_response_data = []
-                for row in gt_search_results:
-                    record, sim = row
-                    res = ImageResponse.model_validate(record)
-                    res.similarity = round(float(sim or 0.0) * 100.0, 2)
-                    gt_response_data.append(res)
                     
             return {
                 "query_image": query_metadata,
-                "results": response_data,
-                "gt_results": gt_response_data
+                "results": response_data
             }
         except Exception as e:
             logger.error(f"Error in search_similar: {e}")

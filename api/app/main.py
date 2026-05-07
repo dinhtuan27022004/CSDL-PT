@@ -12,6 +12,7 @@ from .core.logging import setup_logging, get_logger
 from .db.session import init_db
 from .routers.health import router as health_router
 from .routers.image import router as images_router
+from .routers.optimization import router as optimization_router
 
 logger = get_logger(__name__)
 
@@ -54,6 +55,7 @@ def create_app() -> FastAPI:
     # Register routes
     app.include_router(health_router)
     app.include_router(images_router)
+    app.include_router(optimization_router)
     
     logger.info("FastAPI modular application created successfully")
     

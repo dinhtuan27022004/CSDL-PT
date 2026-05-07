@@ -17,6 +17,14 @@ const useImageStore = create((set, get) => ({
     // Search and filter
     searchQuery: '',
     sortBy: 'newest', // 'newest' | 'oldest' | 'feature-ready'
+    
+    // Pagination state
+    pagination: {
+        page: 1,
+        size: 50,
+        total: 0,
+        pages: 0
+    },
 
     // Similarity state
     similarityResults: [],
@@ -30,7 +38,6 @@ const useImageStore = create((set, get) => ({
 
     // Evaluation state
     evaluationData: null,
-    evaluationAllData: {},
     evaluationLoading: false,
     evaluationError: null,
     isOptimizing: false,
@@ -144,14 +151,9 @@ const useImageStore = create((set, get) => ({
                 histogramPreviewUrl: item.histogram_vis_path ? `${API_BASE_URL}${item.histogram_vis_path}` : null,
             }));
 
-            const gtResultsWithPreviews = data.gt_results ? data.gt_results.map(item => ({
-                ...item,
-                previewUrl: (item.url || item.file_path) ? `${API_BASE_URL}${item.url || item.file_path}` : null,
-            })) : [];
-
             set({ 
                 similarityResults: resultsWithPreviews, 
-                gtResults: gtResultsWithPreviews,
+                gtResults: [],
                 queryImageFeatures: data.query_image,
                 similarityLoading: false 
             });
@@ -182,16 +184,16 @@ const useImageStore = create((set, get) => ({
     toasts: [],
 
 
-    loadImportHistory: async () => {
+    loadImportHistory: async (page = 1, size = 50) => {
         try {
-            const response = await fetch(`${API_BASE_URL}/api/images`);
+            const response = await fetch(`${API_BASE_URL}/api/images?page=${page}&size=${size}`);
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
-            const history = await response.json();
-            console.log(history);
+            const data = await response.json();
+            
             // Add preview URLs
-            const historyWithPreviews = history.map(item => ({
+            const historyWithPreviews = data.items.map(item => ({
                 ...item,
                 previewUrl: (item.url || item.file_path) ? `${API_BASE_URL}${item.url || item.file_path}` : null,
                 hogPreviewUrl: item.hog_vis_path ? `${API_BASE_URL}${item.hog_vis_path}` : null,
@@ -200,8 +202,16 @@ const useImageStore = create((set, get) => ({
                 lbpPreviewUrl: item.lbp_vis_path ? `${API_BASE_URL}${item.lbp_vis_path}` : null,
                 status: 'completed'
             }));
-            console.log(historyWithPreviews);
-            set({ importHistory: historyWithPreviews });
+            
+            set({ 
+                importHistory: historyWithPreviews,
+                pagination: {
+                    page: data.page,
+                    size: data.size,
+                    total: data.total,
+                    pages: data.pages
+                }
+            });
         } catch (error) {
             console.error('Failed to load import history:', error);
         }
@@ -291,7 +301,7 @@ const useImageStore = create((set, get) => ({
      * Add new image - Upload to real backend
      * Handles File objects from Drag & Drop
      */
-    addImage: async (files) => {
+    addImage: async (files, paths = []) => {
         set({ importLoading: true, importProgress: 0 });
 
         try {
@@ -319,6 +329,9 @@ const useImageStore = create((set, get) => ({
             fileList.forEach(file => {
                 formData.append('files', file);
             });
+            if (paths && paths.length > 0) {
+                formData.append('paths', JSON.stringify(paths));
+            }
 
             set({ importProgress: 30 });
 
@@ -425,6 +438,56 @@ const useImageStore = create((set, get) => ({
     },
 
     /**
+     * Sync VLM Data (New Route)
+     */
+    syncVlmData: async (force = false) => {
+        set({ recomputing: true });
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/images/recompute-vlm?force=${force}`, {
+                method: 'POST'
+            });
+
+            if (!response.ok) throw new Error(`Sync failed: ${response.statusText}`);
+            
+            const result = await response.json();
+            get().addToast('success', result.message || 'VLM Sync completed successfully');
+            
+            await get().loadImportHistory();
+            set({ recomputing: false });
+        } catch (error) {
+            console.error('VLM Sync failed:', error);
+            set({ recomputing: false });
+            get().addToast('error', error.message || 'Failed to sync VLM data');
+        }
+    },
+    
+    resetDatabase: async () => {
+        if (!window.confirm('Are you absolutely sure? This will delete ALL image metadata and visualizations permanently!')) {
+            return;
+        }
+        
+        set({ recomputing: true });
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/images/reset-db`, {
+                method: 'POST'
+            });
+            
+            if (!response.ok) throw new Error(`Reset failed: ${response.statusText}`);
+            
+            const result = await response.json();
+            get().addToast('success', result.message || 'Database reset successfully');
+            
+            // Reload history (should be empty)
+            await get().loadImportHistory(1);
+            set({ recomputing: false });
+        } catch (error) {
+            console.error('Reset database failed:', error);
+            set({ recomputing: false });
+            get().addToast('error', error.message || 'Failed to reset database');
+        }
+    },
+
+    /**
      * Toast notifications
      */
     addToast: (type, message) => {
@@ -447,11 +510,11 @@ const useImageStore = create((set, get) => ({
     /**
      * Evaluation and Optimization
      */
-    fetchEvaluation: async (gt = 'clip') => {
+    fetchEvaluation: async () => {
         set({ evaluationLoading: true, evaluationError: null });
         try {
-            const response = await fetch(`${API_BASE_URL}/api/images/evaluation?gt=${gt}`);
-            if (!response.ok) throw new Error(`Failed to fetch evaluation results for ${gt}`);
+            const response = await fetch(`${API_BASE_URL}/api/optimization/evaluation`);
+            if (!response.ok) throw new Error(`Failed to fetch evaluation results`);
             const data = await response.json();
             set({ evaluationData: data, evaluationLoading: false });
         } catch (error) {
@@ -459,26 +522,15 @@ const useImageStore = create((set, get) => ({
         }
     },
 
-    fetchAllEvaluations: async () => {
-        set({ evaluationLoading: true, evaluationError: null });
-        try {
-            const response = await fetch(`${API_BASE_URL}/api/images/evaluation-all`);
-            if (!response.ok) throw new Error('Failed to fetch all evaluation results');
-            const data = await response.json();
-            set({ evaluationAllData: data, evaluationLoading: false });
-        } catch (error) {
-            set({ evaluationError: error.message, evaluationLoading: false });
-        }
-    },
 
-    triggerOptimization: async (gt = 'all', trials = 50, allowNegative = false, excludeEmbeddings = false) => {
+    triggerOptimization: async (trials = 50, allowNegative = false) => {
         set({ isOptimizing: true });
         try {
-            const response = await fetch(`${API_BASE_URL}/api/images/optimize?gt=${gt}&trials=${trials}&allow_negative=${allowNegative}&exclude_embeddings=${excludeEmbeddings}`, {
+            const response = await fetch(`${API_BASE_URL}/api/optimization/optimize?trials=${trials}&allow_negative=${allowNegative}`, {
                 method: 'POST'
             });
             if (!response.ok) throw new Error('Failed to start optimization');
-            get().addToast('success', `Optimization for ${gt} started in the background.`);
+            get().addToast('success', `Optimization started using folder-based labels.`);
         } catch (error) {
             get().addToast('error', error.message);
             set({ isOptimizing: false });
@@ -487,7 +539,7 @@ const useImageStore = create((set, get) => ({
 
     fetchWeights: async () => {
         try {
-            const response = await fetch(`${API_BASE_URL}/api/images/weights`);
+            const response = await fetch(`${API_BASE_URL}/api/optimization/weights`);
             if (!response.ok) throw new Error('Failed to fetch weights');
             const data = await response.json();
             set({ currentWeights: data });

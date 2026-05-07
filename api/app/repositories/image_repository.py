@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import text, func, case, cast, Float, literal
+from sqlalchemy import text, func, case, cast, Float, literal, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from typing import List, Optional, Tuple, Any
 from ..models.image import ImageMetadata
@@ -17,8 +17,8 @@ class ImageRepository:
         self.settings = get_settings()
 
     def _load_weights(self, suffix: Optional[str] = None) -> dict:
-        """Load optimized weights from file if it exists, optionally with a model suffix"""
-        filename = f"weights_{suffix}.json" if suffix else self.settings.weights_file
+        """Load optimized weights from file if it exists"""
+        filename = self.settings.weights_file
         if os.path.exists(filename):
             try:
                 with open(filename, 'r') as f:
@@ -30,9 +30,12 @@ class ImageRepository:
     def create(self, db: Session, image_record: ImageMetadata, image: bytes) -> ImageMetadata:
         try:
             img_path = self.settings.uploads_dir / image_record.file_name
+            # Ensure parent directory exists (e.g. if file_name is "images/wallpaper_0.jpg")
+            img_path.parent.mkdir(parents=True, exist_ok=True)
+            
             with open(img_path, "wb") as f:
                 f.write(image)
-            image_record.file_path = f"/static/uploads/{image_record.file_name}"
+            image_record.file_path = f"/static/uploads/{image_record.file_name.replace('\\', '/')}"
             db.add(image_record)
             db.flush()
             db.refresh(image_record)
@@ -63,14 +66,15 @@ class ImageRepository:
     def get_by_id(self, db: Session, image_id: int) -> Optional[ImageMetadata]:
         return db.query(ImageMetadata).filter(ImageMetadata.id == image_id).first()
 
-    def get_all(self, db: Session, limit: int = 500, offset: int = 0) -> List[ImageMetadata]:
+    def get_all(self, db: Session, limit: int = 10000, offset: int = 0) -> List[ImageMetadata]:
         return db.query(ImageMetadata)\
             .order_by(ImageMetadata.created_at.desc())\
             .limit(limit)\
             .offset(offset)\
             .all()
 
-    def search(self, db: Session, query_metadata: ImageMetadata, limit: int = 10, search_settings: Any = None) -> Tuple[List[Any], Optional[List[Any]]]:
+
+    def search(self, db: Session, query_metadata: ImageMetadata, limit: int = 10, search_settings: Any = None) -> List[Any]:
         """Perform dynamic weighted similarity search based on enabled components"""
         try:
             # Helper to make expressions NaN-proof and range-bound [0, 1]
@@ -101,7 +105,7 @@ class ImageRepository:
                 "sharpness": sharpness_sim,
             }
 
-            # 2. Color Space Similarities (Dynamic Generation)
+            # 2. Color Space Similarities
             for space in ["rgb", "hsv", "lab", "ycrcb", "hls", "xyz", "gray"]:
                 for method in ["std", "interp", "gauss"]:
                     # Hist
@@ -139,19 +143,12 @@ class ImageRepository:
                 "cld": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.cld_vector.cosine_distance(query_metadata.cld_vector))),
                 "spm": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.spm_vector.cosine_distance(query_metadata.spm_vector))),
                 "saliency": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.saliency_vector.cosine_distance(query_metadata.saliency_vector))),
-                "bovw": safe_sim(1.0 - func.greatest(0.0, ImageMetadata.bovw_vector.cosine_distance(query_metadata.bovw_vector))),
             })
 
-            # 4. Deep Learning / Semantic
+            # 4. Semantic
             sim_map.update({
                 "semantic": safe_sim(1.0 - func.greatest(0.0, func.coalesce(ImageMetadata.llm_embedding.cosine_distance(query_metadata.llm_embedding), 1.0))),
-                "clip": safe_sim(1.0 - func.greatest(0.0, func.coalesce(ImageMetadata.clip_vector.cosine_distance(query_metadata.clip_vector), 1.0))),
-                "dinov2": safe_sim(1.0 - func.greatest(0.0, func.coalesce(ImageMetadata.dinov2_vector.cosine_distance(query_metadata.dinov2_vector), 1.0))),
-                "siglip": safe_sim(1.0 - func.greatest(0.0, func.coalesce(ImageMetadata.siglip_vector.cosine_distance(query_metadata.siglip_vector), 1.0))),
-                "convnext": safe_sim(1.0 - func.greatest(0.0, func.coalesce(ImageMetadata.convnext_vector.cosine_distance(query_metadata.convnext_vector), 1.0))),
-                "efficientnet": safe_sim(1.0 - func.greatest(0.0, func.coalesce(ImageMetadata.efficientnet_vector.cosine_distance(query_metadata.efficientnet_vector), 1.0))),
                 "dreamsim": safe_sim(1.0 - func.greatest(0.0, func.coalesce(ImageMetadata.dreamsim_vector.cosine_distance(query_metadata.dreamsim_vector), 1.0))),
-                "sam": safe_sim(1.0 - func.greatest(0.0, func.coalesce(ImageMetadata.sam_vector.cosine_distance(query_metadata.sam_vector), 1.0))),
             })
             
             # 5. Discrete / Dominant Color
@@ -160,13 +157,19 @@ class ImageRepository:
             query_category = (query_metadata.category or "General").lower()
             sim_map["category"] = case((func.lower(ImageMetadata.category) == query_category, 1.0), else_=0.0)
             
-            query_entities = [e.lower() for e in (query_metadata.entities or [])]
+            query_entities = list(set([e.lower() for e in (query_metadata.entities or [])]))
             if query_entities:
-                entity_match_sum = sum([
-                    case((ImageMetadata.entities.cast(JSONB).contains([tag]), 1.0), else_=0.0) 
-                    for tag in query_entities
+                # Count matches using contains (Intersection)
+                intersection_size = sum([
+                    case((ImageMetadata.entities.cast(Text).ilike(f'%"{e}"%'), 1.0), else_=0.0)
+                    for e in query_entities
                 ])
-                sim_map["entity"] = entity_match_sum / len(query_entities)
+                
+                # Jaccard = Intersection / (Size_Query + Size_DB - Intersection)
+                db_size = func.jsonb_array_length(ImageMetadata.entities)
+                union_size = len(query_entities) + db_size - intersection_size
+                
+                sim_map["entity"] = safe_sim(intersection_size / func.greatest(1.0, union_size))
             else:
                 sim_map["entity"] = literal(0.0)
 
@@ -184,10 +187,6 @@ class ImageRepository:
                 
                 # Debug: Check if query metadata has features
                 logger.info(f"Query Image Features Sample - Brightness: {query_metadata.brightness}, Contrast: {query_metadata.contrast}")
-                if query_metadata.clip_vector:
-                    logger.info(f"Query Image has CLIP vector (dim: {len(query_metadata.clip_vector)})")
-                else:
-                    logger.warning("Query Image is MISSING CLIP vector!")
 
                 if mode == "manual":
                     weights = getattr(search_settings, 'weights', None)
@@ -196,9 +195,8 @@ class ImageRepository:
                     weights = {} # Triggers equal weights fallback
                     logger.info("Using Equal Weights mode")
                 else: # optimized
-                    opt_target = getattr(search_settings, 'optimization_target', 'clip')
-                    weights = self._load_weights(opt_target)
-                    logger.info(f"Optimized weights ({opt_target}) keys: {list(weights.keys()) if weights else 'None'}")
+                    weights = self._load_weights()
+                    logger.info(f"Optimized weights keys: {list(weights.keys()) if weights else 'None'}")
                 
                 weighted_components = []
                 weight_sum = 0.0
@@ -230,22 +228,13 @@ class ImageRepository:
                 cast(total_sim, Float).label('similarity')
             )
             
-            # Add all individual similarity components with _sim suffix
+            # Add all individual similarity components with _similarity suffix
             for name, expr in sim_map.items():
-                results_query = results_query.add_columns(cast(expr, Float).label(f"{name}_sim"))
+                results_query = results_query.add_columns(cast(expr, Float).label(f"{name}_similarity"))
             
             final_results = results_query.order_by(text('similarity DESC')).limit(limit).all()
             
-            gt_results = None
-            if getattr(search_settings, 'compare_with_gt', False):
-                opt_target = getattr(search_settings, 'optimization_target', 'clip')
-                gt_sim_expr = sim_map.get(opt_target, literal(0.0))
-                gt_results = db.query(
-                    ImageMetadata,
-                    cast(gt_sim_expr, Float).label('similarity')
-                ).order_by(text('similarity DESC')).limit(limit).all()
-            
-            return final_results, gt_results
+            return final_results
         except Exception as e:
             logger.error(f"Error performing dynamic hybrid search: {e}")
             raise
