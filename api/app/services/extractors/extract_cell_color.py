@@ -25,7 +25,7 @@ def _extract_cell_color(img_bgr: np.ndarray, visualizations_dir: Path, filename:
     if filename:
         try:
             vis_filename = f"cell_{filename}.png"
-            full_vis_path = visualizations_dir / vis_filename
+            full_vis_path = Path(visualizations_dir) / vis_filename
             cv2.imwrite(str(full_vis_path), vis_img)
             vis_path = f"/static/visualizations/{vis_filename}"
         except Exception as e:

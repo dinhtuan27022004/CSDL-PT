@@ -35,7 +35,7 @@ def _extract_gabor(img_bgr: np.ndarray, visualizations_dir: Path, filename: Opti
     if filename:
         try:
             vis_filename = f"gabor_{filename}.png"
-            full_vis_path = visualizations_dir / vis_filename
+            full_vis_path = Path(visualizations_dir) / vis_filename
             vis_norm = cv2.normalize(vis_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
             cv2.imwrite(str(full_vis_path), vis_norm)
             vis_path = f"/static/visualizations/{vis_filename}"

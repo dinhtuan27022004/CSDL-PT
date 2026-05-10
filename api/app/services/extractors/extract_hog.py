@@ -21,7 +21,7 @@ def _extract_hog(img_bgr: np.ndarray, visualizations_dir: Path, filename: Option
         try:
             hog_rescaled = exposure.rescale_intensity(hog_image, in_range=(0, 10))
             vis_filename = f"hog_{filename}.png"
-            full_vis_path = visualizations_dir / vis_filename
+            full_vis_path = Path(visualizations_dir) / vis_filename
             cv2.imwrite(str(full_vis_path), (hog_rescaled * 255).astype(np.uint8))
             vis_path = f"/static/visualizations/{vis_filename}"
         except Exception as e:

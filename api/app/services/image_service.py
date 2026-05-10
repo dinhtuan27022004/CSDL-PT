@@ -1,15 +1,16 @@
 import os
 import gc
-import traceback
 import time
 import math
 import asyncio
-from pathlib import Path
-import uuid
-import json
 import hashlib
+from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple, Set
 from sqlalchemy.orm import Session
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+import cv2
+import numpy as np
+
 from ..repositories.image_repository import ImageRepository
 from .llm_service import LLMService
 from .cache_service import CacheService
@@ -17,34 +18,15 @@ from ..models.image import ImageMetadata
 from ..schemas.image import ImageResponse
 from ..core.config import get_settings
 from ..core.logging import get_logger
-from ..core.exceptions import ImageProcessingError
-import cv2
-import numpy as np
-from PIL import Image
-from fastapi import UploadFile
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-from skimage.feature import hog, local_binary_pattern, graycomatrix, graycoprops
-from skimage import exposure
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from .extractors import (
-    _soft_assignment_hist, _gaussian_hist, _extract_brightness, _extract_contrast,
-    _extract_saturation, _extract_edge_density, _extract_sharpness, _extract_color_moments,
-    _extract_lbp, _extract_all_color_features, _extract_joint_rgb_histogram, _extract_hog,
-    _extract_hu_moments, _extract_gabor, _extract_ccv, _extract_fourier_descriptors,
-    _extract_geometric_shape, _extract_dominant_color, _extract_cell_color, _extract_tamura,
-    _extract_edge_orientation, _extract_cell_rgb_hist_cdf, _extract_glcm, _extract_wavelet,
-    _extract_ehd, _extract_cld, _extract_spm, _extract_saliency, _extract_correlogram
-)
+
+# Import modular components
+from .image.lanes import TraditionalLane, SemanticLane, PerceptualLane
+from .image.metadata import assemble_metadatas
 
 logger = get_logger(__name__)
 
-
-# --- ImageService Class ---
-
 class ImageService:
-    """Service for image CRUD, storage, and validation with batch processing and OOM protection"""
+    """Service for image CRUD, storage, and validation using modular lane handlers"""
     
     def __init__(self, 
         repository: ImageRepository,
@@ -56,69 +38,18 @@ class ImageService:
         self.cache = cache_service
         self.settings = get_settings()
         
-        # Lane 1 & 2 Executors
-        self.executor = ThreadPoolExecutor(max_workers=32)
-        # Use ThreadPool for traditional features on Windows to save RAM
-        self.cpu_executor = ThreadPoolExecutor(max_workers=min(32, os.cpu_count() or 4))
-
-        # Models are loaded dynamically during batch processing
-
-    def get_images(self, db: Session, limit: int = 10000, offset: int = 0) -> List[ImageMetadata]:
-        return self.repository.get_all(db, limit=limit, offset=offset)
-
-    async def recompute_vlm_missing(self, db: Session, force: bool = False):
-        """Sync VLM analysis and embeddings for all images in the uploads folder"""
-        # 1. Get records for images in the upload folder
-        records = db.query(ImageMetadata).filter(ImageMetadata.file_path.ilike("%/static/uploads/%")).all()
-            
-        if not records:
-            return {"message": "No images found in uploads folder", "count": 0}
-            
-        n_total = len(records)
-        logger.info(f"Syncing VLM/Embeddings for {n_total} images in uploads (force={force})")
+        # Shared Executors
+        self.io_executor = ThreadPoolExecutor(max_workers=8)
+        self.gpu_executor = ThreadPoolExecutor(max_workers=8)
+        # Using ProcessPool for CPU bound tasks to bypass GIL
+        self.cpu_executor = ProcessPoolExecutor(max_workers=min(8, os.cpu_count() or 4))
         
-        batch_size = 1000
-        processed_count = 0
-        
-        for i in range(0, n_total, batch_size):
-            sub_batch = records[i : i + batch_size]
-            images_bytes, filenames, valid_records = [], [], []
-            
-            for record in sub_batch:
-                rel_path = record.file_path.replace("/static/uploads/", "")
-                phys_path = self.settings.uploads_dir / rel_path
-                if phys_path.exists():
-                    try:
-                        with open(phys_path, "rb") as f:
-                            images_bytes.append(f.read())
-                        filenames.append(record.file_name)
-                        valid_records.append(record)
-                    except Exception as e: logger.error(f"Error reading {phys_path}: {e}")
-            
-            if not images_bytes: continue
-                
-            try:
-                # 2. VLM (Uses cache internally)
-                vlm_results = await self.llm_service.analyze_vision_batch(images_bytes, filenames)
-                
-                # 3. LLM Text Embedding
-                texts = [f"Category: {r['category']}. Entities: {r['entities']}. Description: {r['description']}" for r in vlm_results]
-                llm_embeddings = self.llm_service.extract_embeddings_batch(texts)
-                
-                # 4. Update Database
-                for j, record in enumerate(valid_records):
-                    if j < len(vlm_results):
-                        record.category, record.description, record.entities = vlm_results[j]["category"], vlm_results[j]["description"], vlm_results[j]["entities"]
-                        if j < len(llm_embeddings): record.llm_embedding = llm_embeddings[j]
-                
-                db.commit()
-                processed_count += len(valid_records)
-                logger.info(f"Synced batch {i//batch_size + 1}/{math.ceil(n_total/batch_size)}")
-            except Exception as e:
-                db.rollback()
-                logger.error(f"Batch sync failed: {e}")
-                
-        return {"message": "VLM Sync Completed", "total": n_total, "processed": processed_count}
+        # Initialize Lane Handlers
+        self.traditional_lane = TraditionalLane(self.settings, self.cpu_executor)
+        self.semantic_lane = SemanticLane(self.llm_service)
+        self.perceptual_lane = PerceptualLane(self.gpu_executor)
+
+    # --- Core Extraction Pipeline ---
 
     async def extract_features_batch(
         self, 
@@ -127,243 +58,45 @@ class ImageService:
         force_llm: bool = False,
         required_features: Optional[Set[str]] = None
     ) -> List[ImageMetadata]:
-        """Memory-safe concurrent feature extraction using 4-lane pipeline with selective extraction support"""
-        run_lane2 = True # API Lane (Metadata) usually always needed for display
-        run_lane3 = True # DreamSim Lane
-        run_lane4 = True # LLM Lane
-        
-        if required_features is not None:
-            run_lane3 = "dreamsim" in required_features
-            run_lane4 = "semantic" in required_features or force_llm
-            # Lane 1 (CPU) is light, we always run it to get basic stats
-
+        """Orchestrate the 4-lane pipeline using modular handlers"""
         n = len(images_bytes)
-        logger.info(f"Starting 4-Lane pipeline for N={n} images")
+        loop = asyncio.get_running_loop()
         
-        img_smalls = []
-        cached_vectors = [{} for _ in range(n)]
+        # Feature Selection Logic
+        run_traditional = "traditional" in required_features if required_features else True
+        run_vlm = "vlm" in required_features if required_features else True
+        run_dreamsim = "dreamsim" in required_features if required_features else True
+        run_llm = ("semantic" in required_features or force_llm) if required_features else True
 
+        # Phase 1: Pre-processing (Decode and Resize)
+        img_smalls = []
+        dims = []
         for i in range(n):
             file_bytes = np.frombuffer(images_bytes[i], dtype=np.uint8)
             img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-            if img is None: raise ValueError(f"Failed to decode image at index {i}")
+            if img is None:
+                raise ValueError(f"Failed to decode image {filenames[i]}")
             
-            small = cv2.resize(img, (int(img.shape[1]/6), int(img.shape[0]/6)))
-            img_smalls.append(small)
-            
-        for i, img in enumerate(img_smalls):
-            cached_vectors[i]["width"] = img.shape[1]
-            cached_vectors[i]["height"] = img.shape[0]
+            # Resizing to 1/6 for traditional feature extraction efficiency
+            img_smalls.append(cv2.resize(img, (img.shape[1]//6, img.shape[0]//6)))
+            dims.append((img.shape[1], img.shape[0]))
 
-        all_indices = list(range(n))
+        # Phase 2: Parallel Lane Execution (1, 2, 3)
+        lane1_task = self.traditional_lane.run(img_smalls, filenames, loop) if run_traditional else asyncio.sleep(0, [([None]*25) for _ in range(n)])
+        lane2_task = self.semantic_lane.run_vlm(images_bytes, filenames) if run_vlm else asyncio.sleep(0, [{} for _ in range(n)])
+        lane3_task = self.perceptual_lane.run(images_bytes, loop) if run_dreamsim else asyncio.sleep(0, [None] * n)
 
-        loop = asyncio.get_running_loop()
-
-        # ============================================================
-        # LANE 1: Traditional CPU Feature Extraction
-        # ============================================================
-        async def run_cpu_lane():
-            logger.info(f"Lane 1: Starting Traditional Feature Extraction for {n} images...")
-            cpu_start = time.time()
-            
-            # Extractors registry: (function, list of extra arguments)
-            extractors = [
-                (_extract_brightness, []),
-                (_extract_contrast, []),
-                (_extract_saturation, []),
-                (_extract_edge_density, []),
-                (_extract_all_color_features, [self.settings.visualizations_dir]),
-                (_extract_hog, [self.settings.visualizations_dir]),
-                (_extract_hu_moments, [self.settings.visualizations_dir]),
-                (_extract_dominant_color, []),
-                (_extract_lbp, [self.settings.visualizations_dir]),
-                (_extract_color_moments, []),
-                (_extract_sharpness, []),
-                (_extract_gabor, [self.settings.visualizations_dir]),
-                (_extract_ccv, [self.settings.visualizations_dir]),
-                (_extract_fourier_descriptors, []),
-                (_extract_geometric_shape, []),
-                (_extract_tamura, []),
-                (_extract_edge_orientation, []),
-                (_extract_glcm, []),
-                (_extract_wavelet, []),
-                (_extract_correlogram, []),
-                (_extract_ehd, []),
-                (_extract_cld, []),
-                (_extract_spm, []),
-                (_extract_saliency, [])
-            ]
-
-            all_results = []
-            for i in range(n):
-                img = img_smalls[i]
-                fname = filenames[i] or f"image_{i+1}"
-                logger.info(f"Lane 1 [{i+1}/{n}]: Extracting features for '{fname}'...")
-                
-                tasks = []
-                for func, extra_args in extractors:
-                    args = [img] + extra_args
-                    # Add filename if the extractor expects it for visualizations
-                    if func in [_extract_all_color_features, _extract_hog, _extract_hu_moments, _extract_lbp, _extract_gabor, _extract_ccv]:
-                        args.append(fname)
-                        
-                    tasks.append(loop.run_in_executor(self.cpu_executor, func, *args))
-                
-                try:
-                    res = await asyncio.gather(*tasks)
-                    all_results.append(res)
-                    logger.info(f"Lane 1 [{i+1}/{n}]: Completed all CPU features for '{fname}'")
-                except Exception as e:
-                    logger.error(f"Lane 1 Error on image {i+1} ({fname}): {e}")
-                    raise
-
-            logger.info(f"Lane 1: CPU Traditional Features Completed in {time.time() - cpu_start:.2f}s")
-            return all_results
-
-        # ============================================================
-        # LANE 2: LLM Vision API (runs in parallel)
-        # ============================================================
-        async def run_api_lane():
-            if not run_lane2: return [{} for _ in range(n)]
-            logger.info("Lane 2: Starting LLM Vision (VLM) Analysis...")
-            vlm_start = time.time()
-            names = [filenames[i] or f"upload_{i}_{int(time.time())}" for i in range(n)]
-            res = await self.llm_service.analyze_vision_batch(images_bytes, names)
-            logger.info(f"Lane 2: VLM Analysis Completed in {time.time() - vlm_start:.2f}s")
-            return res
-
-        # ============================================================
-        # LANE 3: DreamSim GPU Feature Extraction (runs in parallel)
-        # ============================================================
-        def _run_dreamsim_sync(images_bytes_list):
-            try:
-                from dreamsim import dreamsim
-                import torch
-                from PIL import Image as PILImage
-                import io
-                
-                device = "cuda" if torch.cuda.is_available() else "cpu"
-                # Cache model in the class to avoid reloading every time
-                if not hasattr(self, '_dreamsim_model'):
-                    logger.info(f"Lane 3: Loading DreamSim model on {device}...")
-                    self._dreamsim_model, self._dreamsim_preprocess = dreamsim(pretrained=True, device=device)
-                
-                results = []
-                for img_bytes in images_bytes_list:
-                    img_pil = PILImage.open(io.BytesIO(img_bytes)).convert("RGB")
-                    img_tensor = self._dreamsim_preprocess(img_pil).to(device)
-                    with torch.no_grad():
-                        feat = self._dreamsim_model.embed(img_tensor)
-                    results.append(feat.cpu().numpy().flatten().tolist())
-                return results
-            except Exception as e:
-                logger.error(f"Lane 3 (DreamSim) failed in executor: {e}")
-                return [None] * len(images_bytes_list)
-
-        async def run_dreamsim_lane():
-            if not run_lane3: return [None] * n
-            logger.info("Lane 3: Scheduling DreamSim Feature Extraction...")
-            ds_start = time.time()
-            
-            # Use run_in_executor to avoid blocking the main event loop
-            results = await loop.run_in_executor(self.executor, _run_dreamsim_sync, images_bytes)
-            
-            logger.info(f"Lane 3: DreamSim Completed in {time.time() - ds_start:.2f}s")
-            return results
-
-        # Start tasks
-        lane1_task = run_cpu_lane()
-        lane2_task = run_api_lane()
-        lane3_task = run_dreamsim_lane()
-
-        # Wait for all 3 lanes to complete
         lane1_res, lane2_res, lane3_res = await asyncio.gather(lane1_task, lane2_task, lane3_task)
         
-        # Free img_smalls after all lanes are done
+        # Memory Cleanup
         img_smalls.clear()
         gc.collect()
 
-        # ============================================================
-        # LANE 4: LLM Text Embedding (runs after Lane 2 completes with descriptions)
-        # ============================================================
-        llm_embeddings = [None] * n
-        if run_lane4:
-            logger.info("Lane 4: Starting LLM Text Embedding...")
-            lane4_start = time.time()
-            texts_to_embed = []
-            for vd in lane2_res:
-                combined = f"Category: {vd.get('category')}. Entities: {vd.get('entities')}. Description: {vd.get('description')}"
-                texts_to_embed.append(combined)
-            llm_embeddings = self.llm_service.extract_embeddings_batch(texts_to_embed, filenames=filenames)
-            logger.info(f"Lane 4: LLM Text Embedding Completed in {time.time() - lane4_start:.2f}s")
-        else:
-            logger.info("Lane 4: Skipping LLM Embedding (not required by weights)")
+        # Phase 3: Dependent Lane Execution (Lane 4 depends on Lane 2)
+        llm_embeddings = await self.semantic_lane.run_embeddings(lane2_res, filenames) if run_llm else [None] * n
 
-        # ============================================================
-        # ASSEMBLE: Combine results into ImageMetadata
-        # ============================================================
-        final_metadatas = []
-        try:
-            for i in range(n):
-                c, v = lane1_res[i], lane2_res[i]
-                col = c[4] # all_color_features dict
-                
-                # Create metadata object with core features
-                meta = ImageMetadata(
-                    file_name = filenames[i],
-                    width = cached_vectors[i].get("width"),
-                    height = cached_vectors[i].get("height"),
-                    brightness = c[0], contrast = c[1], saturation = c[2], edge_density = c[3],
-                    histogram_vis_path = col["vis_path"],
-                    cell_color_vis_path = col["cell_color_vis_path"],
-                    hog_vector = c[5][0], hog_vis_path = c[5][1],
-                    hu_moments_vector = c[6][0], hu_vis_path = c[6][1],
-                    dominant_color_vector = c[7],
-                    lbp_vector = c[8][0], lbp_vis_path = c[8][1],
-                    color_moments_vector = c[9],
-                    sharpness = c[10],
-                    gabor_vector = c[11][0], gabor_vis_path = c[11][1],
-                    ccv_vector = c[12][0], ccv_vis_path = c[12][1],
-                    zernike_vector = c[13], geo_vector = c[14], tamura_vector = c[15],
-                    edge_orientation_vector = c[16], glcm_vector = c[17],
-                    wavelet_vector = c[18], correlogram_vector = c[19],
-                    ehd_vector = c[20], cld_vector = c[21], spm_vector = c[22],
-                    saliency_vector = c[23],
-                    category = v.get("category"), description = v.get("description"), entities = v.get("entities"),
-                    llm_embedding = llm_embeddings[i],
-                    dreamsim_vector = lane3_res[i]
-                )
-                
-                # Dynamically fill color space features (hist, cdf, joint, vectors)
-                spaces = ["rgb", "hsv", "lab", "ycrcb", "hls", "xyz", "gray"]
-                feats = ["hist_std", "hist_interp", "hist_gauss", "cdf_std", "cdf_interp", "cdf_gauss"]
-                
-                for s in spaces:
-                    for f in feats:
-                        field = f"{s}_{f}"
-                        if hasattr(meta, field) and field in col:
-                            setattr(meta, field, col[field])
-                    
-                    # Joint features
-                    if s != "gray":
-                        for m in ["std", "interp", "gauss"]:
-                            field = f"joint_{s}_{m}"
-                            if hasattr(meta, field) and field in col:
-                                setattr(meta, field, col[field])
-                    
-                    # Cell vectors
-                    field = f"cell_{s}_vector"
-                    if hasattr(meta, field) and field in col:
-                        setattr(meta, field, col[field])
-
-                final_metadatas.append(meta)
-        except Exception as e:
-            logger.error(f"Error during metadata assembly at index {i}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            raise
-        
-        return final_metadatas
+        # Phase 4: Final Metadata Assembly
+        return assemble_metadatas(n, filenames, dims, lane1_res, lane2_res, lane3_res, llm_embeddings)
 
     async def extract_features(
         self, 
@@ -372,149 +105,256 @@ class ImageService:
         force_llm: bool = False,
         required_features: Optional[Set[str]] = None
     ) -> ImageMetadata:
-        """Backward compatibility for single image feature extraction with selective support"""
+        """Compatibility wrapper for single image processing"""
         results = await self.extract_features_batch([image], [filename], force_llm=force_llm, required_features=required_features)
         return results[0]
 
-    async def process(
+    # --- Persistence & Internal Logic ---
+
+    async def _process_and_persist(
         self, 
         db: Session, 
-        files: List[Any],
+        images: List[bytes], 
+        names: List[str], 
+        hashes: List[str], 
+        save_to_disk: bool = False, 
         force_llm: bool = False
-    ) -> List[ImageMetadata]:
-        """Process multiple images (UploadFile or Tuple[bytes, str]) using the batch pipeline"""
-        n_total = len(files)
-        logger.info(f"Processing batch of {n_total} images")
-        start_time = time.time()
-        
-        batch_size = 128
-        final_results = []
-        
-        for i in range(0, len(files), batch_size):
-            batch_files = files[i:i+batch_size]
-            images_data = []
-            filenames = []
-            file_hashes = []
+    ) -> List[Any]:
+        """Unified persistence logic (Reusable)"""
+        if not images: return []
             
-            for file in batch_files:
-                if hasattr(file, "read"): # FastAPI UploadFile
-                    content = await file.read()
-                    filename = file.filename
-                else: # Tuple (bytes, filename)
-                    content, filename = file
+        metas = await self.extract_features_batch(images, names, force_llm=force_llm)
+        results = []
+        
+        for j, meta in enumerate(metas):
+            try:
+                meta.file_hash = hashes[j]
+                if save_to_disk:
+                    res = self.repository.create(db, meta, images[j])
+                    results.append(res)
+                else:
+                    meta.file_path = f"/static/uploads/{names[j]}"
+                    db.add(meta)
+                    db.commit() # Immediate save per requirement
+                    results.append(ImageResponse.model_validate(meta))
+            except Exception as e:
+                db.rollback()
+                logger.error(f"Persistence failed for {names[j]}: {e}")
                 
-                # Check for duplicates using MD5 hash
+        return results
+
+    # --- Public API Endpoints ---
+
+    def get_images(self, db: Session, limit: int = 10000, offset: int = 0) -> List[ImageMetadata]:
+        return self.repository.get_all(db, limit=limit, offset=offset)
+
+    async def process(self, db: Session, files: List[Any], force_llm: bool = False) -> List[ImageMetadata]:
+        """Process images from API upload request"""
+        final_results = []
+        batch_size = 32
+        n_total = len(files)
+        n_batches = math.ceil(n_total / batch_size)
+        
+        for i in range(0, n_total, batch_size):
+            logger.info(f"--- Processing Upload Batch {i//batch_size + 1} / {n_batches} ---")
+            batch = files[i:i+batch_size]
+            imgs, names, hashes = [], [], []
+            
+            for f in batch:
+                content = await f.read() if hasattr(f, "read") else f[0]
+                fname = f.filename if hasattr(f, "read") else f[1]
                 f_hash = hashlib.md5(content).hexdigest()
                 
-                # Fast database check
-                existing = db.query(ImageMetadata).filter(ImageMetadata.file_hash == f_hash).first()
+                existing = db.query(ImageMetadata).filter(
+                    (ImageMetadata.file_hash == f_hash) | 
+                    ((ImageMetadata.file_name == fname) & (ImageMetadata.file_hash == None))
+                ).first()
+                
                 if existing:
-                    logger.info(f"Skipping duplicate image: {filename} (Already exists as ID {existing.id})")
+                    logger.info(f"Skipping existing image: {fname}")
+                    if existing.file_hash is None: 
+                        existing.file_hash = f_hash
+                        db.commit()
                     continue
-                
-                images_data.append(content)
-                filenames.append(filename)
-                file_hashes.append(f_hash)
-                
-            if not images_data:
-                continue
-                
-            logger.info(f"--- Processing Sub-batch {i//batch_size + 1} / {math.ceil(n_total/batch_size)} ---")
-            results_metadata = await self.extract_features_batch(images_data, filenames, force_llm=force_llm)
+                imgs.append(content); names.append(fname); hashes.append(f_hash)
             
-            for j, metadata in enumerate(results_metadata):
-                metadata.file_hash = file_hashes[j] # Save the hash
-                result = self.repository.create(db, metadata, images_data[j])
-                final_results.append(result)
-            
-            # Giải phóng RAM cho sub-batch
-            images_data.clear()
-            import gc
+            results = await self._process_and_persist(db, imgs, names, hashes, save_to_disk=True, force_llm=force_llm)
+            final_results.extend(results)
             gc.collect()
-        
-        logger.info(f"Batch processing completed {len(final_results)} images in {time.time() - start_time:.2f}s")
+            
         return final_results
 
-    async def search_similar(
-        self, 
-        db: Session, 
-        query_image_content: bytes, 
-        filename: str,
-        search_settings: Any,
-        limit: int = 50,
-        force_llm: bool = False
-    ) -> Dict[str, Any]:
-        """Hybrid Search with selective feature extraction based on active weights"""
-        try:
-            # 1. Determine required features from weights
-            required_features = None
-            mode = getattr(search_settings, 'mode', 'optimized')
-            
-            if mode == "optimized":
-                target = "optimized"
-                weights = self.repository._load_weights(target)
-                required_features = {k for k, v in weights.items() if v != 0}
-                
-                logger.info(f"Optimized mode: Required features = {required_features}")
-            elif mode == "manual":
-                weights = getattr(search_settings, 'weights', {})
-                required_features = {k for k, v in weights.items() if v > 0}
-                logger.info(f"Manual mode: Required features = {required_features}")
-            else:
-                logger.info("Equal mode: All features required")
+    async def recompute_all(self, db: Session) -> List[ImageResponse]:
+        """Sync missing images from uploads directory to database and fix invalid DreamSim vectors with detailed logging"""
+        start_time = time.time()
+        logger.info("Starting Global Recompute/Sync process...")
+        
+        existing = db.query(ImageMetadata.id, ImageMetadata.file_hash, ImageMetadata.file_name, ImageMetadata.dreamsim_vector).all()
+        
+        # Helper to check vector validity
+        def is_vec_valid(vec):
+            if vec is None: return False
+            try:
+                v_arr = np.array(vec)
+                return v_arr.shape[0] > 0 and np.any(v_arr != 0)
+            except:
+                return False
 
-            # 2. Extract only necessary features for the query image
-            query_metadata = await self.extract_features(
-                query_image_content, 
-                filename, 
-                force_llm=force_llm, 
-                required_features=required_features
-            )
-            search_results = self.repository.search(
-                db=db, 
-                query_metadata=query_metadata,
-                search_settings=search_settings,
-                limit=limit
-            )
+        ex_map = {r.file_hash: {"id": r.id, "name": r.file_name, "dreamsim": r.dreamsim_vector} for r in existing if r.file_hash}
+        ex_names = {r.file_name for r in existing}
+        
+        logger.info(f"Database contains {len(existing)} total records. {len(ex_map)} have valid hashes.")
+
+        def scan_files():
+            scanned_new = []
+            scanned_fix = []
+            skipped_count = 0
+            valid_dreamsim_count = 0
             
-            response_data = []
-            for idx, row in enumerate(search_results):
-                record = row[0]
-                total_sim = row[1]
-                row_dict = row._asdict()
+            for root, _, filenames in os.walk(self.settings.uploads_dir):
+                for f in filenames:
+                    if not f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')): continue
+                    p = Path(root) / f
+                    rel = str(p.relative_to(self.settings.uploads_dir)).replace("\\", "/")
+                    try:
+                        with open(p, "rb") as file_obj:
+                            content = file_obj.read()
+                            h = hashlib.md5(content).hexdigest()
+                        
+                        if h in ex_map:
+                            record = ex_map[h]
+                            if not is_vec_valid(record["dreamsim"]):
+                                scanned_fix.append((record["id"], content, rel))
+                            else:
+                                valid_dreamsim_count += 1
+                                skipped_count += 1
+                            continue
+                            
+                        # If hash missing, check if we need to update hash for known filename
+                        if rel in ex_names:
+                            scanned_new.append(("UPDATE_HASH", rel, h))
+                        else:
+                            scanned_new.append(("PROCESS", content, rel, h))
+                    except Exception as e:
+                        logger.error(f"Failed to scan {p}: {e}")
+            return scanned_new, scanned_fix, skipped_count, valid_dreamsim_count
+
+        loop = asyncio.get_event_loop()
+        scanned_items, fix_items, total_skipped, valid_ds_count = await loop.run_in_executor(self.io_executor, scan_files)
+        
+        logger.info(f"Scan Result: Total Skipped={total_skipped} (Healthy DreamSim={valid_ds_count})")
+        logger.info(f"Actions Needed: {len(scanned_items)} New/Update items, {len(fix_items)} DreamSim fixes needed.")
+        
+        to_process = []
+        for item in scanned_items:
+            if item[0] == "UPDATE_HASH":
+                rel, h = item[1], item[2]
+                rec = db.query(ImageMetadata).filter(ImageMetadata.file_name == rel).first()
+                if rec and rec.file_hash is None:
+                    rec.file_hash = h; db.commit()
+            else:
+                to_process.append(item[1:]) # (content, rel, h)
+            
+        final = []
+        batch_size = 32
+        
+        # 1. Process New Images
+        if to_process:
+            n_total = len(to_process)
+            n_batches = math.ceil(n_total / batch_size)
+            logger.info(f"Phase 1: Extracting features for {n_total} NEW images in {n_batches} batches.")
+            
+            for i in range(0, n_total, batch_size):
+                b_start = time.time()
+                batch = to_process[i:i+batch_size]
+                results = await self._process_and_persist(db, [x[0] for x in batch], [x[1] for x in batch], [x[2] for x in batch])
+                final.extend(results)
+                logger.info(f"Batch {i//batch_size + 1}/{n_batches} completed in {time.time() - b_start:.2f}s")
+                gc.collect()
+
+        # 2. Fix Invalid DreamSim Vectors
+        if fix_items:
+            n_fix = len(fix_items)
+            n_fix_batches = math.ceil(n_fix / batch_size)
+            logger.info(f"Phase 2: Fixing {n_fix} invalid DreamSim vectors in {n_fix_batches} batches.")
+            
+            for i in range(0, n_fix, batch_size):
+                b_start = time.time()
+                batch = fix_items[i:i+batch_size]
+                contents = [x[1] for x in batch]; ids = [x[0] for x in batch]
                 
-                res = ImageResponse.model_validate(record)
-                res.similarity = round(float(total_sim or 0.0) * 100.0, 2)
+                try:
+                    ds_results = await self.perceptual_lane.run(contents, loop)
+                    for j, ds_vec in enumerate(ds_results):
+                        if ds_vec:
+                            db.query(ImageMetadata).filter(ImageMetadata.id == ids[j]).update({"dreamsim_vector": ds_vec})
+                    db.commit()
+                except Exception as e:
+                    db.rollback()
+                    logger.error(f"Failed to fix DreamSim batch: {e}")
                 
-                # Map all similarity scores dynamically
-                for key, val in row_dict.items():
-                    if key.endswith('_similarity') and key != 'similarity':
-                        if hasattr(res, key):
-                            setattr(res, key, float(val or 0.0))
-                
-                # Map Visualization URLs
-                mapping = {
-                    "hog_vis_path": "hogPreviewUrl",
-                    "hu_vis_path": "huPreviewUrl",
-                    "cell_color_vis_path": "cellColorPreviewUrl",
-                    "lbp_vis_path": "lbpPreviewUrl",
-                    "gabor_vis_path": "gaborPreviewUrl",
-                    "ccv_vis_path": "ccvPreviewUrl",
-                    "histogram_vis_path": "histogramPreviewUrl"
-                }
-                
-                for p_key, ui_key in mapping.items():
-                    val = getattr(record, p_key, None)
-                    if val:
-                        setattr(res, ui_key, val)
-                
-                res.previewUrl = record.file_path
-                response_data.append(res)
-                    
-            return {
-                "query_image": query_metadata,
-                "results": response_data
-            }
-        except Exception as e:
-            logger.error(f"Error in search_similar: {e}")
-            raise
+                logger.info(f"Fix Batch {i//batch_size + 1}/{n_fix_batches} completed in {time.time() - b_start:.2f}s")
+                gc.collect()
+
+        duration = time.time() - start_time
+        logger.info(f"Global Recompute Finished. Processed {len(final)} new images and {len(fix_items)} fixes in {duration:.2f}s.")
+        return final
+
+    async def search_similar(self, db: Session, content: bytes, filename: str, search_settings: Any, limit: int = 50, force_llm: bool = False) -> Dict[str, Any]:
+        """Perform hybrid search based on dynamic search settings"""
+        mode = getattr(search_settings, 'mode', 'optimized')
+        req_features = None
+        
+        if mode == "optimized":
+            weights = self.repository._load_weights("optimized")
+            req_features = {k for k, v in weights.items() if v != 0}
+        elif mode == "manual":
+            req_features = {k for k, v in getattr(search_settings, 'weights', {}).items() if v > 0}
+            
+        query_meta = (await self.extract_features_batch([content], [filename], force_llm=force_llm, required_features=req_features))[0]
+        results = self.repository.search(db, query_meta, limit=limit, search_settings=search_settings)
+        
+        resp = []
+        mapping = {
+            "hog_vis_path": "hogPreviewUrl", "hu_vis_path": "huPreviewUrl", "cell_color_vis_path": "cellColorPreviewUrl", 
+            "lbp_vis_path": "lbpPreviewUrl", "gabor_vis_path": "gaborPreviewUrl", "ccv_vis_path": "ccvPreviewUrl", 
+            "histogram_vis_path": "histogramPreviewUrl"
+        }
+        
+        for row in results:
+            record, sim = row[0], row[1]
+            res = ImageResponse.model_validate(record)
+            res.similarity = round(float(sim or 0.0) * 100.0, 2)
+            res.previewUrl = record.file_path
+            
+            for k, v in row._asdict().items():
+                if k.endswith('_similarity') and hasattr(res, k): setattr(res, k, float(v or 0.0))
+            
+            for pk, uk in mapping.items():
+                val = getattr(record, pk, None)
+                if val: setattr(res, uk, val)
+            resp.append(res)
+            
+        return {"query_image": query_meta, "results": resp}
+
+    async def recompute_vlm_missing(self, db: Session, force: bool = False):
+        """Minimal sync for images with missing VLM/LLM analysis"""
+        records = db.query(ImageMetadata).filter(ImageMetadata.file_path.ilike("%/static/uploads/%")).all()
+        processed = 0
+        for i in range(0, len(records), 100):
+            batch = records[i:i+100]
+            imgs, names, valid = [], [], []
+            for r in batch:
+                p = self.settings.uploads_dir / r.file_path.replace("/static/uploads/", "")
+                if p.exists():
+                    with open(p, "rb") as f: imgs.append(f.read()); names.append(r.file_name); valid.append(r)
+            if not imgs: continue
+            vlm = await self.semantic_lane.run_vlm(imgs, names)
+            txts = [f"Category: {r['category']}. Entities: {r['entities']}. Description: {r['description']}" for r in vlm]
+            embs = self.llm_service.extract_embeddings_batch(txts)
+            for j, r in enumerate(valid):
+                r.category, r.description, r.entities = vlm[j]["category"], vlm[j]["description"], vlm[j]["entities"]
+                if j < len(embs): r.llm_embedding = embs[j]
+            db.commit(); processed += len(valid)
+            gc.collect()
+        return {"message": "VLM Sync Completed", "processed": processed}

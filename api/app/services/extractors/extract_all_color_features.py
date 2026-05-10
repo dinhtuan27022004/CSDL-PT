@@ -63,6 +63,20 @@ def _extract_all_color_features(img_bgr: np.ndarray, visualizations_dir: Path, f
                 cell_vec.extend(avg.tolist() if not is_gray else avg)
         results[f"cell_{name}_vector"] = cell_vec
 
+        # --- Color Moments (Mean, Std, Skew) ---
+        means, stds, skews = [], [], []
+        for ch in channels:
+            mean = np.mean(ch)
+            std = np.std(ch)
+            diff = ch - mean
+            skew = np.mean(diff**3) / (std**3 + 1e-7)
+            means.append(float(mean))
+            stds.append(float(std))
+            skews.append(float(skew))
+        results[f"{name}_mean"] = means
+        results[f"{name}_std"] = stds
+        results[f"{name}_skew"] = skews
+
     # --- Visualization (21 separate images) ---
     vis_paths = {}
     cell_color_vis_path = None
@@ -84,7 +98,7 @@ def _extract_all_color_features(img_bgr: np.ndarray, visualizations_dir: Path, f
                 ax.set_title(f"{name.upper()} {method.upper()}", fontsize=9, color='#94a3b8')
                 ax.set_facecolor('#0f172a')
                 vis_fn = f"hist_{name}_{method}_{fname}.png"
-                plt.savefig(str(visualizations_dir / vis_fn), facecolor='#020617', bbox_inches='tight', dpi=100)
+                plt.savefig(str(Path(visualizations_dir) / vis_fn), facecolor='#020617', bbox_inches='tight', dpi=100)
                 plt.close(fig)
                 vis_paths[f"{name}_{method}"] = f"/static/visualizations/{vis_fn}"
 
@@ -96,7 +110,7 @@ def _extract_all_color_features(img_bgr: np.ndarray, visualizations_dir: Path, f
                     r, g, b = cell_rgb[(i*4+j)*3:(i*4+j)*3+3]
                     grid[i*64:(i+1)*64, j*64:(j+1)*64] = [int(r), int(g), int(b)]
             cc_fn = f"cell_color_{fname}.png"
-            cv2.imwrite(str(visualizations_dir / cc_fn), cv2.cvtColor(grid, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(str(Path(visualizations_dir) / cc_fn), cv2.cvtColor(grid, cv2.COLOR_RGB2BGR))
             cell_color_vis_path = f"/static/visualizations/{cc_fn}"
         except Exception as e: logger.warning(f"Feature vis failed: {e}")
             

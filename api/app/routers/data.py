@@ -45,9 +45,27 @@ def select_diverse_gt(
         logger.error(f"Diverse GT selection failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/progress")
-def get_progress(service: DataService = Depends(get_data_service)):
-    return service.get_progress()
+@router.post("/generate-gt3")
+def generate_gt3(
+    payload: dict,
+    db: Session = Depends(get_db),
+    service: DataService = Depends(get_data_service)
+):
+    """Generate ground_truth_3.json from folder structure"""
+    try:
+        folder_path = payload.get("folder_path")
+        if not folder_path:
+            raise HTTPException(status_code=400, detail="folder_path is required")
+            
+        result = service.generate_ground_truth_3(db, folder_path)
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"GT3 generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/stats")
 def get_stats(
@@ -56,7 +74,13 @@ def get_stats(
     service: DataService = Depends(get_data_service)
 ):
     """Get statistics for a specific ground truth file (Runs in threadpool)"""
-    filename = "ground_truth.json" if mode == "full" else "ground_truth_2.json"
+    if mode == "full":
+        filename = "ground_truth.json"
+    elif mode == "diverse":
+        filename = "ground_truth_2.json"
+    else:
+        filename = "ground_truth_3.json"
+
     logger.info(f"--- FETCHING STATS FOR MODE: {mode}, FILENAME: {filename} ---")
     try:
         result = service.get_stats_for_file(db, filename)

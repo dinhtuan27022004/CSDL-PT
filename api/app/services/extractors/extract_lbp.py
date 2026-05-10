@@ -30,7 +30,7 @@ def _extract_lbp(img_bgr: np.ndarray, visualizations_dir: Path, filename: Option
         try:
             lbp_uint8 = (lbp * (255 / (P + 1))).astype(np.uint8)
             vis_filename = f"lbp_{filename}.png"
-            vis_path = visualizations_dir / vis_filename
+            vis_path = Path(visualizations_dir) / vis_filename
             cv2.imwrite(str(vis_path), lbp_uint8)
             vis_relative_path = f"/static/visualizations/{vis_filename}"
         except Exception as e:

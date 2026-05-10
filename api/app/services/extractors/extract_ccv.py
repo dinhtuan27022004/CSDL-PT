@@ -37,7 +37,7 @@ def _extract_ccv(img_bgr: np.ndarray, visualizations_dir: Path, filename: Option
     if filename:
         try:
             vis_filename = f"ccv_{filename}.png"
-            full_vis_path = visualizations_dir / vis_filename
+            full_vis_path = Path(visualizations_dir) / vis_filename
             vis_img = (quantized * (255/num_bins)).astype(np.uint8)
             vis_color = cv2.applyColorMap(vis_img, cv2.COLORMAP_JET)
             cv2.imwrite(str(full_vis_path), vis_color)

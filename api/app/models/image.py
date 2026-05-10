@@ -29,6 +29,10 @@ class ImageMetadata(Base):
     joint_rgb_gauss = Column(Vector(64))
     cell_rgb_vector = Column(Vector(48))
 
+    rgb_mean_vector = Column(Vector(3))
+    rgb_std_vector = Column(Vector(3))
+    rgb_skew_vector = Column(Vector(3))
+
     # --- HSV Features ---
     hsv_hist_std = Column(Vector(24))
     hsv_hist_interp = Column(Vector(24))
@@ -40,6 +44,10 @@ class ImageMetadata(Base):
     joint_hsv_interp = Column(Vector(64))
     joint_hsv_gauss = Column(Vector(64))
     cell_hsv_vector = Column(Vector(48))
+
+    hsv_mean_vector = Column(Vector(3))
+    hsv_std_vector = Column(Vector(3))
+    hsv_skew_vector = Column(Vector(3))
 
     # --- Lab Features ---
     lab_hist_std = Column(Vector(24))
@@ -53,6 +61,10 @@ class ImageMetadata(Base):
     joint_lab_gauss = Column(Vector(64))
     cell_lab_vector = Column(Vector(48))
 
+    lab_mean_vector = Column(Vector(3))
+    lab_std_vector = Column(Vector(3))
+    lab_skew_vector = Column(Vector(3))
+
     # --- YCrCb Features ---
     ycrcb_hist_std = Column(Vector(24))
     ycrcb_hist_interp = Column(Vector(24))
@@ -64,6 +76,10 @@ class ImageMetadata(Base):
     joint_ycrcb_interp = Column(Vector(64))
     joint_ycrcb_gauss = Column(Vector(64))
     cell_ycrcb_vector = Column(Vector(48))
+
+    ycrcb_mean_vector = Column(Vector(3))
+    ycrcb_std_vector = Column(Vector(3))
+    ycrcb_skew_vector = Column(Vector(3))
 
     # --- HLS Features ---
     hls_hist_std = Column(Vector(24))
@@ -77,6 +93,10 @@ class ImageMetadata(Base):
     joint_hls_gauss = Column(Vector(64))
     cell_hls_vector = Column(Vector(48))
 
+    hls_mean_vector = Column(Vector(3))
+    hls_std_vector = Column(Vector(3))
+    hls_skew_vector = Column(Vector(3))
+
     # --- XYZ Features ---
     xyz_hist_std = Column(Vector(24))
     xyz_hist_interp = Column(Vector(24))
@@ -89,6 +109,10 @@ class ImageMetadata(Base):
     joint_xyz_gauss = Column(Vector(64))
     cell_xyz_vector = Column(Vector(48))
 
+    xyz_mean_vector = Column(Vector(3))
+    xyz_std_vector = Column(Vector(3))
+    xyz_skew_vector = Column(Vector(3))
+
     # --- Gray Features ---
     gray_hist_std = Column(Vector(8))
     gray_hist_interp = Column(Vector(8))
@@ -98,11 +122,15 @@ class ImageMetadata(Base):
     gray_cdf_gauss = Column(Vector(8))
     cell_gray_vector = Column(Vector(16))
 
+    gray_mean_vector = Column(Vector(1))
+    gray_std_vector = Column(Vector(1))
+    gray_skew_vector = Column(Vector(1))
+
     hog_vector = Column(Vector(1568))  # HOG features
     hu_moments_vector = Column(Vector(7))  # 7 invariant Hu Moments
     dominant_color_vector = Column(Vector(3)) 
     lbp_vector = Column(Vector(160)) # Local Binary Patterns (10 bins * 16 cells)
-    color_moments_vector = Column(Vector(9)) # Mean, Std, Skew for 3 channels (HSV)
+
     sharpness = Column(Float)
     gabor_vector = Column(Vector(512)) # Gabor Filter Bank (32 stats * 16 cells)
     ccv_vector = Column(Vector(96)) # Color Coherence Vector (2 * 48 histogram bins)

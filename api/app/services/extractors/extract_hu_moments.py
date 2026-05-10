@@ -19,7 +19,7 @@ def _extract_hu_moments(img_bgr: np.ndarray, visualizations_dir: Path, filename:
     if filename:
         try:
             vis_filename = f"hu_{filename}.png"
-            full_vis_path = visualizations_dir / vis_filename
+            full_vis_path = Path(visualizations_dir) / vis_filename
             cv2.imwrite(str(full_vis_path), thresh)
             vis_path = f"/static/visualizations/{vis_filename}"
         except Exception as e:

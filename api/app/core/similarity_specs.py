@@ -34,6 +34,11 @@ def get_color_feature_specs() -> Dict[str, str]:
         
         # Cell Vector
         specs[f"cell_{space}"] = "l2_cell"
+        
+        # Color Moments
+        specs[f"{space}_mean"] = "cosine"
+        specs[f"{space}_std"] = "cosine"
+        specs[f"{space}_skew"] = "cosine"
     return specs
 
 # Traditional & Deep Learning Vectors
@@ -41,7 +46,6 @@ VECTOR_FEATURES = {
     "hog": "cosine",
     "hu_moments": "cosine",
     "lbp": "cosine",
-    "color_moments": "cosine",
     "gabor": "cosine",
     "ccv": "cosine",
     "zernike": "cosine",
@@ -55,8 +59,7 @@ VECTOR_FEATURES = {
     "cld": "cosine",
     "spm": "cosine",
     "saliency": "cosine",
-    "semantic": "cosine",
-    "dreamsim": "cosine"
+    "semantic": "cosine"
 }
 
 # Special Discrete/Custom Features

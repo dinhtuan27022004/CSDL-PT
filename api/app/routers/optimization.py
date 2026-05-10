@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
-from typing import Dict, Any
+from typing import Dict, Any, List
 import json
 import os
 from ..deps import get_db
@@ -25,19 +25,15 @@ def get_evaluation():
 @router.post("/optimize")
 def trigger_optimization(
     background_tasks: BackgroundTasks,
-    trials: int = 50, 
-    allow_negative: bool = False,
+    trials: int = 50,
     db: Session = Depends(get_db)
 ):
     try:
         service = OptimizationService(db)
-        # BackgroundTasks works perfectly with synchronous run_optimization
-        background_tasks.add_task(service.run_optimization, trials, allow_negative)
-        
+        background_tasks.add_task(service.run_optimization, trials)
         return {
-            "message": "Optimization started in background",
-            "trials": trials, 
-            "allow_negative": allow_negative
+            "status": "Optimization started",
+            "trials": trials
         }
     except Exception as e:
         logger.error(f"Failed to start optimization: {e}")
@@ -53,3 +49,24 @@ def get_current_weights():
             return json.load(f)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read weights: {str(e)}")
+
+@router.get("/worst-queries")
+def get_worst_queries(
+    top_n: int = 5,
+    db: Session = Depends(get_db)
+):
+    """Return the top_n query images with the lowest per-image mAP@5 from cache."""
+    try:
+        filename = "evaluation_results.json"
+        if not os.path.exists(filename):
+            raise HTTPException(status_code=404, detail="Evaluation results not found. Please run optimization first.")
+        with open(filename, 'r') as f:
+            data = json.load(f)
+        
+        worst_queries = data.get("worst_queries", [])
+        return worst_queries[:top_n]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get worst queries from cache: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

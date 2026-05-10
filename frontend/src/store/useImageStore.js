@@ -409,26 +409,17 @@ const useImageStore = create((set, get) => ({
                 throw new Error(`Recompute failed: ${response.statusText}`);
             }
 
-            const updatedAndNewImages = await response.json();
+            const result = await response.json();
 
-            // Perform a robust update: 
-            // 1. Map existing history to update data where IDs match
-            // 2. But simpler: Just replace the history with the new data, 
-            //    ensuring we keep preview URLs which might be computed client-side in some flows?
-            //    Actually the API returns URLs now, so we can just mapped them standardly.
-
-            const historyWithPreviews = updatedAndNewImages.map(item => ({
-                ...item,
-                previewUrl: (item.url || item.file_path) ? `${API_BASE_URL}${item.url || item.file_path}` : null,
-                hogPreviewUrl: item.hog_vis_path ? `${API_BASE_URL}${item.hog_vis_path}` : null,
-                huPreviewUrl: item.hu_vis_path ? `${API_BASE_URL}${item.hu_vis_path}` : null,
-                cellColorPreviewUrl: item.cell_color_vis_path ? `${API_BASE_URL}${item.cell_color_vis_path}` : null,
-                lbpPreviewUrl: item.lbp_vis_path ? `${API_BASE_URL}${item.lbp_vis_path}` : null,
-                status: 'completed'
-            }));
-
-            set({ importHistory: historyWithPreviews, recomputing: false });
-            get().addToast('success', `Successfully recomputed features for ${updatedAndNewImages.length} images`);
+            // The API now returns a message object because it's a background task
+            // So we don't map it directly, but rather reload the history or just show success
+            if (result.status === 'success') {
+                get().addToast('success', result.message || 'Recompute started in background');
+                // Optional: reload history after a short delay or just wait for polling
+                setTimeout(() => get().loadImportHistory(), 1000);
+            }
+            
+            set({ recomputing: false });
 
         } catch (error) {
             console.error('Recompute all failed:', error);
@@ -510,8 +501,8 @@ const useImageStore = create((set, get) => ({
     /**
      * Evaluation and Optimization
      */
-    fetchEvaluation: async () => {
-        set({ evaluationLoading: true, evaluationError: null });
+    fetchEvaluation: async (silent = false) => {
+        if (!silent) set({ evaluationLoading: true, evaluationError: null });
         try {
             const response = await fetch(`${API_BASE_URL}/api/optimization/evaluation`);
             if (!response.ok) throw new Error(`Failed to fetch evaluation results`);
@@ -523,10 +514,10 @@ const useImageStore = create((set, get) => ({
     },
 
 
-    triggerOptimization: async (trials = 50, allowNegative = false) => {
+    triggerOptimization: async (trials = 50) => {
         set({ isOptimizing: true });
         try {
-            const response = await fetch(`${API_BASE_URL}/api/optimization/optimize?trials=${trials}&allow_negative=${allowNegative}`, {
+            const response = await fetch(`${API_BASE_URL}/api/optimization/optimize?trials=${trials}`, {
                 method: 'POST'
             });
             if (!response.ok) throw new Error('Failed to start optimization');

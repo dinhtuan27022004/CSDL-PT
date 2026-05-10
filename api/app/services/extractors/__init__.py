@@ -5,7 +5,7 @@ from .extract_contrast import _extract_contrast
 from .extract_saturation import _extract_saturation
 from .extract_edge_density import _extract_edge_density
 from .extract_sharpness import _extract_sharpness
-from .extract_color_moments import _extract_color_moments
+
 from .extract_lbp import _extract_lbp
 from .extract_all_color_features import _extract_all_color_features
 from .extract_joint_rgb_histogram import _extract_joint_rgb_histogram

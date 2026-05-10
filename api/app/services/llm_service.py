@@ -85,9 +85,12 @@ class LLMService:
 
     async def _analyze_single_vision(self, image_bytes: bytes, filename: str) -> Dict[str, Any]:
         """Single vision analysis with caching check"""
-        cached_item = self.cache.get_item(filename)
+        # Normalize to basename so callers passing full paths (e.g. DATA/3/img.jpg)
+        # and callers passing just basenames (img.jpg) always share the same cache slot.
+        cache_key = os.path.basename(filename) if filename else filename
+        cached_item = self.cache.get_item(cache_key)
         if cached_item and "description" in cached_item and "category" in cached_item:
-            logger.info(f"Using cached vision data for: {filename}")
+            logger.info(f"Using cached vision data for: {cache_key}")
             return {
                 "category": cached_item.get("category"),
                 "description": cached_item.get("description"),
@@ -100,10 +103,10 @@ class LLMService:
 
         try:
             analysis = await self._call_vision_api(image_bytes)
-            self.cache.update_item(filename, analysis)
+            self.cache.update_item(cache_key, analysis)
             return {**analysis, "cached": False}
         except Exception as e:
-            logger.error(f"Vision API failed for {filename}: {e}")
+            logger.error(f"Vision API failed for {cache_key}: {e}")
             return {"category": "Error", "description": str(e), "entities": [], "cached": False}
 
     def extract_embeddings_batch(self, texts: List[str], filenames: Optional[List[str]] = None, batch_size: int = 32) -> List[Optional[List[float]]]:

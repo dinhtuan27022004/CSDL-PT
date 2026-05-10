@@ -15,6 +15,7 @@ import os
 import time
 import math
 import asyncio
+from ..db.session import SessionLocal
 
 router = APIRouter(prefix="/api/images", tags=["images"])
 # Reuse processing service to avoid re-loading weights
@@ -66,12 +67,6 @@ async def upload_images(
         if paths_list:
             gt_file = "ground_truth.json"
             gt_data = {}
-            if os.path.exists(gt_file):
-                try:
-                    with open(gt_file, 'r') as f:
-                        gt_data = json.load(f)
-                except:
-                    gt_data = {}
             
             updated = False
             for p in paths_list:
@@ -172,6 +167,26 @@ async def recompute_vlm_data(
     except Exception as e:
         logger.error(f"Recomputation route failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+async def _run_recompute_in_background(service: ImageService):
+    """Internal helper to manage DB session for background tasks"""
+    db = SessionLocal()
+    try:
+        await service.recompute_all(db)
+        logger.info("Background recompute completed.")
+    except Exception as e:
+        logger.error(f"Background recompute failed: {e}")
+    finally:
+        db.close()
+
+@router.post("/recompute")
+async def recompute_all_features(
+    background_tasks: BackgroundTasks,
+    service: ImageService = Depends(get_image_service)
+):
+    """Trigger global recomputation of all image features from uploads folder in background"""
+    background_tasks.add_task(_run_recompute_in_background, service)
+    return {"message": "Global recompute started in background. Please check terminal logs for progress."}
 
 @router.post("/reset-db")
 async def reset_database(db: Session = Depends(get_db)):
