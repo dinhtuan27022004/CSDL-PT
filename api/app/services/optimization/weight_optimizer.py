@@ -1,5 +1,6 @@
 import os
 import json
+import shutil
 import numpy as np
 import optuna
 import time
@@ -30,6 +31,7 @@ class WeightOptimizer:
         self.train_idx = []
         self.best_test_map5 = -1.0
         self.trial_history = [] # List of (n_features, map5)
+        self.gt_data = {} # Store ground truth raw data for stats
 
     def prepare(self, gt_path: Optional[str] = None) -> bool:
         """Load ground truth and prepare validation indices"""
@@ -43,12 +45,12 @@ class WeightOptimizer:
         logger.info(f"Using ground truth source: {gt_path}")
         try:
             with open(gt_path, "r") as f:
-                gt_data = json.load(f)
+                self.gt_data = json.load(f)
         except Exception as e:
             logger.error(f"Failed to read {gt_path}: {e}")
             return False
         
-        file_to_label = {os.path.basename(f): label for label, files in gt_data.items() for f in files}
+        file_to_label = {os.path.basename(f): label for label, files in self.gt_data.items() for f in files}
                 
         n = len(self.store.images)
         self.y_true = np.zeros((n, n), dtype=np.uint8)
@@ -122,12 +124,18 @@ class WeightOptimizer:
     def optimize(self, n_trials: int = 100):
         """Run Optuna optimization study"""
         def objective(trial):
+            weights = {}
             for name in self.feature_names:
-                if trial.suggest_categorical(f"use_{name}", [True, False]):
-                    trial.suggest_float(name, 0.0, 1.0)
+                weights[name] = trial.suggest_float(name, 0.0, 1.0)
             
-            weights = self._extract_weights(trial.params)
-            n_active = sum(1 for v in weights.values() if v > 0.005)
+            # Normalize and handle zero total
+            total = sum(weights.values())
+            if total > 0:
+                weights = {k: v/total for k, v in weights.items()}
+            else:
+                return 0.0
+                
+            n_active = sum(1 for v in weights.values() if v > 0)
             if n_active == 0: return 0.0
                 
             m5 = self.calculate_map(weights, self.train_idx, k=5)
@@ -148,14 +156,10 @@ class WeightOptimizer:
         return self._extract_weights(study.best_params)
 
     def _extract_weights(self, params: Dict[str, Any]) -> Dict[str, float]:
-        weights = {name: (params.get(name, 0.0) if params.get(f"use_{name}", True) else 0.0) 
-                   for name in self.feature_names}
+        weights = {name: params.get(name, 0.0) for name in self.feature_names}
         total = sum(weights.values())
         if total > 0:
-            weights = {k: (v/total if v/total >= 0.01 else 0) for k, v in weights.items()}
-            new_total = sum(weights.values())
-            if new_total > 0:
-                weights = {k: v/new_total for k, v in weights.items()}
+            weights = {k: v/total for k, v in weights.items()}
         return weights
 
     def save_results(self, weights: Dict[str, float]):
@@ -202,9 +206,16 @@ class WeightOptimizer:
             "map5": round(ap, 4), "n_positives_in_gt": n_pos
         } for r, (idx, ap, n_pos) in enumerate(reversed(sorted_queries), 1) if ap >= 0.5]
 
+        # Add Ground Truth Stats
+        gt_stats = {
+            "total_images": sum(len(files) for files in self.gt_data.values()),
+            "clusters": [{"name": name, "count": len(files)} for name, files in self.gt_data.items()]
+        }
+
         results = {
             "gt_model": "folder", "weights": weights, 
             "worst_queries": worst_queries, "best_queries": best_queries, 
+            "gt_stats": gt_stats,
             "timestamp": time.time(),
             "metrics": {
                 "test_map_after": float(m_test), 
@@ -216,7 +227,76 @@ class WeightOptimizer:
         
         with open(settings.weights_file, "w") as f: json.dump(weights, f, indent=4)
         with open(os.path.join(settings.base_dir, "evaluation_results.json"), "w") as f: json.dump(results, f, indent=4)
+        
+        # Export Best Data (MAP5 >= 50%)
+        self.export_best_data(per_image_ap5)
+        
         self.generate_charts(weights, results["metrics"])
+
+    def export_best_data(self, per_image_ap5: List[Tuple[int, float, int]]):
+        """Creates a 'best_data' folder with images having MAP5 >= 0.5, structured by clusters"""
+        best_dir = os.path.join(settings.base_dir, "best_data")
+        if os.path.exists(best_dir):
+            shutil.rmtree(best_dir)
+        os.makedirs(best_dir, exist_ok=True)
+
+        idx_to_ap5 = {idx: ap for idx, ap, _ in per_image_ap5}
+        file_to_idx = {img.file_name: i for i, img in enumerate(self.store.images)}
+
+        count = 0
+        fail_count = 0
+        
+        logger.info(f"STARTING EXPORT TO: {best_dir}")
+        logger.info(f"Total images in store: {len(self.store.images)}")
+        
+        # Pre-scan uploads directory for brute-force matching
+        all_physical_files = {}
+        if os.path.exists(settings.uploads_dir):
+            for root, _, filenames in os.walk(settings.uploads_dir):
+                for f in filenames:
+                    all_physical_files[f] = os.path.join(root, f)
+
+        for cluster_name, files in self.gt_data.items():
+            cluster_dir = os.path.join(best_dir, cluster_name)
+            
+            for file_path_in_gt in files:
+                fname = os.path.basename(file_path_in_gt)
+                idx = file_to_idx.get(fname)
+                ap5 = idx_to_ap5.get(idx, 0) if idx is not None else 0
+                
+                if idx is not None and ap5 >= 0.5:
+                    src_path = self.store.images[idx].file_path
+                    abs_src = None
+
+                    # Strategy 1: Direct path from DB
+                    if os.path.exists(src_path):
+                        abs_src = src_path
+                    
+                    # Strategy 2: Web static resolution
+                    if not abs_src and "/static/uploads/" in src_path:
+                        rel_path = src_path.split("/static/uploads/")[-1]
+                        p = os.path.join(settings.uploads_dir, rel_path)
+                        if os.path.exists(p): abs_src = p
+                    
+                    # Strategy 3: Brute force filename match in uploads folder
+                    if not abs_src:
+                        abs_src = all_physical_files.get(fname)
+
+                    if abs_src and os.path.exists(abs_src):
+                        os.makedirs(cluster_dir, exist_ok=True)
+                        shutil.copy2(abs_src, os.path.join(cluster_dir, fname))
+                        count += 1
+                        # logger.debug(f"COPIED: {fname} (MAP5: {ap5:.2f})")
+                    else:
+                        fail_count += 1
+                        logger.error(f"FILE NOT FOUND: {fname} (MAP5: {ap5:.2f}). DB Path: {src_path}")
+                elif idx is not None:
+                    # Log images that didn't make the cut (low MAP5)
+                    pass 
+                else:
+                    logger.warning(f"IMAGE NOT IN STORE: {fname}")
+        
+        logger.info(f"EXPORT FINISHED. Success: {count}, Failed: {fail_count}")
 
     def generate_charts(self, weights: Dict[str, float], metrics: Dict[str, Any]):
         """Generate all diagnostic charts"""
@@ -224,7 +304,7 @@ class WeightOptimizer:
         
         # 1. Weights Bar Chart
         fig1, ax1 = plt.subplots(figsize=(12, 6))
-        sorted_w = sorted([(k, v) for k, v in weights.items() if v > 0.01], key=lambda x: x[1], reverse=True)
+        sorted_w = sorted([(k, v) for k, v in weights.items() if v > 0], key=lambda x: x[1], reverse=True)
         if sorted_w: sns.barplot(x=[x[1] for x in sorted_w], y=[x[0] for x in sorted_w], palette="viridis", ax=ax1)
         ax1.set_title("Feature Weight Contributions")
         fig1.tight_layout()

@@ -22,6 +22,7 @@ from ..core.logging import get_logger
 # Import modular components
 from .image.lanes import TraditionalLane, SemanticLane, PerceptualLane
 from .image.metadata import assemble_metadatas
+from ..utils.image_processing import resize_logic_worker
 
 logger = get_logger(__name__)
 
@@ -42,7 +43,8 @@ class ImageService:
         self.io_executor = ThreadPoolExecutor(max_workers=8)
         self.gpu_executor = ThreadPoolExecutor(max_workers=8)
         # Using ProcessPool for CPU bound tasks to bypass GIL
-        self.cpu_executor = ProcessPoolExecutor(max_workers=min(8, os.cpu_count() or 4))
+        # Set to 1 worker for sequential processing to strictly control memory
+        self.cpu_executor = ProcessPoolExecutor(max_workers=1)
         
         # Initialize Lane Handlers
         self.traditional_lane = TraditionalLane(self.settings, self.cpu_executor)
@@ -63,10 +65,19 @@ class ImageService:
         loop = asyncio.get_running_loop()
         
         # Feature Selection Logic
-        run_traditional = "traditional" in required_features if required_features else True
-        run_vlm = "vlm" in required_features if required_features else True
-        run_dreamsim = "dreamsim" in required_features if required_features else True
-        run_llm = ("semantic" in required_features or force_llm) if required_features else True
+        traditional_features = {
+            "hog", "hu_moments", "lbp", "sharpness", "gabor", "ccv", 
+            "brightness", "contrast", "saturation", "edge_density",
+            "meta_hist", "meta_cdf", "meta_joint", "meta_cell", "meta_moments"
+        }
+        
+        if required_features:
+            run_traditional = any(f in traditional_features for f in required_features)
+            run_vlm = any(f in {"category", "description", "entity"} for f in required_features)
+            run_dreamsim = "dreamsim" in required_features
+            run_llm = ("semantic" in required_features or force_llm)
+        else:
+            run_traditional = run_vlm = run_dreamsim = run_llm = True
 
         # Phase 1: Pre-processing (Decode and Resize)
         img_smalls = []
@@ -88,15 +99,18 @@ class ImageService:
 
         lane1_res, lane2_res, lane3_res = await asyncio.gather(lane1_task, lane2_task, lane3_task)
         
-        # Memory Cleanup
-        img_smalls.clear()
-        gc.collect()
-
         # Phase 3: Dependent Lane Execution (Lane 4 depends on Lane 2)
         llm_embeddings = await self.semantic_lane.run_embeddings(lane2_res, filenames) if run_llm else [None] * n
 
         # Phase 4: Final Metadata Assembly
-        return assemble_metadatas(n, filenames, dims, lane1_res, lane2_res, lane3_res, llm_embeddings)
+        results = assemble_metadatas(n, filenames, dims, lane1_res, lane2_res, lane3_res, llm_embeddings)
+        
+        # Aggressive Memory Cleanup (Only after everything is finished)
+        img_smalls.clear()
+        del lane1_res, lane2_res, lane3_res, llm_embeddings, images_bytes
+        gc.collect()
+        
+        return results
 
     async def extract_features(
         self, 
@@ -148,6 +162,11 @@ class ImageService:
     def get_images(self, db: Session, limit: int = 10000, offset: int = 0) -> List[ImageMetadata]:
         return self.repository.get_all(db, limit=limit, offset=offset)
 
+    async def _standardize_image(self, image_bytes: bytes) -> bytes:
+        """Standardize image to 16:9 4K resolution before saving"""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self.cpu_executor, resize_logic_worker, image_bytes)
+
     async def process(self, db: Session, files: List[Any], force_llm: bool = False) -> List[ImageMetadata]:
         """Process images from API upload request"""
         final_results = []
@@ -163,6 +182,11 @@ class ImageService:
             for f in batch:
                 content = await f.read() if hasattr(f, "read") else f[0]
                 fname = f.filename if hasattr(f, "read") else f[1]
+                
+                # --- Auto Resize & Standardize before any other logic ---
+                logger.info(f"Standardizing {fname} to 16:9 4K...")
+                content = await self._standardize_image(content)
+                
                 f_hash = hashlib.md5(content).hexdigest()
                 
                 existing = db.query(ImageMetadata).filter(
@@ -180,6 +204,10 @@ class ImageService:
             
             results = await self._process_and_persist(db, imgs, names, hashes, save_to_disk=True, force_llm=force_llm)
             final_results.extend(results)
+            
+            # Aggressive cleanup for the next batch
+            imgs.clear(); names.clear(); hashes.clear()
+            del results
             gc.collect()
             
         return final_results
@@ -268,19 +296,25 @@ class ImageService:
                 b_start = time.time()
                 batch = to_process[i:i+batch_size]
                 results = await self._process_and_persist(db, [x[0] for x in batch], [x[1] for x in batch], [x[2] for x in batch])
+                for r in batch:
+                    logger.info(f"  [NEW IMAGE] {r[1]}")
                 final.extend(results)
                 logger.info(f"Batch {i//batch_size + 1}/{n_batches} completed in {time.time() - b_start:.2f}s")
+                
+                # Aggressive cleanup
+                del batch, results
                 gc.collect()
 
         # 2. Fix Invalid DreamSim Vectors
         if fix_items:
             n_fix = len(fix_items)
-            n_fix_batches = math.ceil(n_fix / batch_size)
+            batch_size_fix = 32
+            n_fix_batches = math.ceil(n_fix / batch_size_fix)
             logger.info(f"Phase 2: Fixing {n_fix} invalid DreamSim vectors in {n_fix_batches} batches.")
             
-            for i in range(0, n_fix, batch_size):
+            for i in range(0, n_fix, batch_size_fix):
                 b_start = time.time()
-                batch = fix_items[i:i+batch_size]
+                batch = fix_items[i:i+batch_size_fix]
                 contents = [x[1] for x in batch]; ids = [x[0] for x in batch]
                 
                 try:
@@ -288,6 +322,7 @@ class ImageService:
                     for j, ds_vec in enumerate(ds_results):
                         if ds_vec:
                             db.query(ImageMetadata).filter(ImageMetadata.id == ids[j]).update({"dreamsim_vector": ds_vec})
+                            logger.info(f"  [FIXED DREAMSIM] {batch[j][2]}")
                     db.commit()
                 except Exception as e:
                     db.rollback()
@@ -338,23 +373,75 @@ class ImageService:
         return {"query_image": query_meta, "results": resp}
 
     async def recompute_vlm_missing(self, db: Session, force: bool = False):
-        """Minimal sync for images with missing VLM/LLM analysis"""
-        records = db.query(ImageMetadata).filter(ImageMetadata.file_path.ilike("%/static/uploads/%")).all()
+        """Minimal sync for images with missing or failed VLM/LLM analysis"""
+        query = db.query(ImageMetadata)
+        
+        if not force:
+            # Filter for missing data: category is null, description is null/empty, or embedding is null
+            from sqlalchemy import or_
+            query = query.filter(or_(
+                ImageMetadata.category == None,
+                ImageMetadata.category == "",
+                ImageMetadata.llm_embedding == None,
+                ImageMetadata.description == None
+            ))
+            
+        records = query.all()
+        if not records:
+            return {"message": "No images with missing VLM data found.", "processed": 0}
+            
+        logger.info(f"Syncing VLM for {len(records)} images...")
         processed = 0
-        for i in range(0, len(records), 100):
-            batch = records[i:i+100]
-            imgs, names, valid = [], [], []
+        batch_size = 32
+        
+        for i in range(0, len(records), batch_size):
+            batch = records[i:i+batch_size]
+            imgs, names, valid_records = [], [], []
+            
             for r in batch:
-                p = self.settings.uploads_dir / r.file_path.replace("/static/uploads/", "")
+                # Resolve physical path
+                p = self.settings.uploads_dir / r.file_name
+                if not p.exists() and r.file_path:
+                    # Try resolving from web path
+                    rel = r.file_path.replace("/static/uploads/", "")
+                    p = self.settings.uploads_dir / rel
+                
                 if p.exists():
-                    with open(p, "rb") as f: imgs.append(f.read()); names.append(r.file_name); valid.append(r)
+                    try:
+                        with open(p, "rb") as f:
+                            imgs.append(f.read())
+                            names.append(r.file_name)
+                            valid_records.append(r)
+                    except Exception as e:
+                        logger.error(f"Failed to read image {p}: {e}")
+            
             if not imgs: continue
-            vlm = await self.semantic_lane.run_vlm(imgs, names)
-            txts = [f"Category: {r['category']}. Entities: {r['entities']}. Description: {r['description']}" for r in vlm]
-            embs = self.llm_service.extract_embeddings_batch(txts)
-            for j, r in enumerate(valid):
-                r.category, r.description, r.entities = vlm[j]["category"], vlm[j]["description"], vlm[j]["entities"]
-                if j < len(embs): r.llm_embedding = embs[j]
-            db.commit(); processed += len(valid)
+            
+            try:
+                # 1. Run VLM (Category, Description, Entities)
+                vlm_results = await self.semantic_lane.run_vlm(imgs, names)
+                
+                # 2. Run Embeddings
+                txts = [f"Category: {r.get('category','')}. Entities: {r.get('entities',[])}. Description: {r.get('description','')}" for r in vlm_results]
+                embeddings = await self.semantic_lane.run_embeddings(vlm_results, names)
+                
+                # 3. Update Database
+                for j, r in enumerate(valid_records):
+                    res = vlm_results[j]
+                    r.category = res.get("category")
+                    r.description = res.get("description")
+                    r.entities = res.get("entities")
+                    if j < len(embeddings):
+                        r.llm_embedding = embeddings[j]
+                    logger.info(f"  [VLM FIXED] {r.file_name}")
+                
+                db.commit()
+                processed += len(valid_records)
+                logger.info(f"Processed VLM batch {i//batch_size + 1}: {len(valid_records)} images.")
+            except Exception as e:
+                db.rollback()
+                logger.error(f"Failed to process VLM batch: {e}")
+            
             gc.collect()
-        return {"message": "VLM Sync Completed", "processed": processed}
+            
+        return {"message": f"VLM Sync Completed. Processed {processed} images.", "processed": processed}

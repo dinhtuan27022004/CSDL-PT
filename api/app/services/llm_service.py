@@ -1,7 +1,5 @@
 import os
-# Force offline mode for transformers/hf_hub at the very beginning
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_HUB_OFFLINE"] = "1"
+# Removed forced offline mode to allow better local config resolution
 
 import json
 import base64

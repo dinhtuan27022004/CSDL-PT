@@ -43,7 +43,6 @@ def _process_single_image_worker(args):
         (_extract_all_color_features, [vis_dir]),
         (_extract_hog, [vis_dir]),
         (_extract_hu_moments, [vis_dir]),
-        (_extract_dominant_color, []),
         (_extract_lbp, [vis_dir]),
         (_extract_sharpness, []),
         (_extract_gabor, [vis_dir]),

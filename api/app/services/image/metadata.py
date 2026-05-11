@@ -5,51 +5,55 @@ def assemble_metadatas(n, filenames, dims, l1, l2, l3, l4):
     """Combines all lane results into ImageMetadata objects"""
     metadatas = []
     for i in range(n):
-        c, v = l1[i], l2[i]
-        col = c[4]
+        # Safety checks for lane results
+        c = l1[i] if (l1 and len(l1) > i) else [None] * 25
+        v = l2[i] if (l2 and len(l2) > i) else {}
+        
+        # Lane 1 - Traditional Features
+        col = c[4] if (len(c) > 4 and c[4] is not None) else {}
+        
         meta = ImageMetadata(
             file_name=filenames[i], width=dims[i][0], height=dims[i][1],
             brightness=c[0], contrast=c[1], saturation=c[2], edge_density=c[3],
-            histogram_vis_path=col["vis_path"], cell_color_vis_path=col["cell_color_vis_path"],
-            hog_vector=c[5][0], hog_vis_path=c[5][1],
-            hu_moments_vector=c[6][0], hu_vis_path=c[6][1],
-            dominant_color_vector=c[7], lbp_vector=c[8][0], lbp_vis_path=c[8][1],
-            sharpness=c[9], gabor_vector=c[10][0], gabor_vis_path=c[10][1],
-            ccv_vector=c[11][0], ccv_vis_path=c[11][1],
-            zernike_vector=c[12], geo_vector=c[13], tamura_vector=c[14],
-            edge_orientation_vector=c[15], glcm_vector=c[16],
-            wavelet_vector=c[17], correlogram_vector=c[18],
-            ehd_vector=c[19], cld_vector=c[20], spm_vector=c[21], saliency_vector=c[22],
+            histogram_vis_path=col.get("vis_path"), 
+            cell_color_vis_path=col.get("cell_color_vis_path"),
+            hog_vector=c[5][0] if (len(c) > 5 and c[5]) else None, 
+            hog_vis_path=c[5][1] if (len(c) > 5 and c[5]) else None,
+            hu_moments_vector=c[6][0] if (len(c) > 6 and c[6]) else None, 
+            hu_vis_path=c[6][1] if (len(c) > 6 and c[6]) else None,
+            lbp_vector=c[7][0] if (len(c) > 7 and c[7]) else None, 
+            lbp_vis_path=c[7][1] if (len(c) > 7 and c[7]) else None,
+            sharpness=c[8] if len(c) > 8 else None, 
+            gabor_vector=c[9][0] if (len(c) > 9 and c[9]) else None, 
+            gabor_vis_path=c[9][1] if (len(c) > 9 and c[9]) else None,
+            ccv_vector=c[10][0] if (len(c) > 10 and c[10]) else None, 
+            ccv_vis_path=c[10][1] if (len(c) > 10 and c[10]) else None,
+            fourier_vector=c[11] if len(c) > 11 else None, 
+            geo_vector=c[12] if len(c) > 12 else None, 
+            tamura_vector=c[13] if len(c) > 13 else None,
+            edge_orientation_vector=c[14] if len(c) > 14 else None, 
+            glcm_vector=c[15] if len(c) > 15 else None,
+            wavelet_vector=c[16] if len(c) > 16 else None, 
+            correlogram_vector=c[17] if len(c) > 17 else None,
+            ehd_vector=c[18] if len(c) > 18 else None, 
+            cld_vector=c[19] if len(c) > 19 else None, 
+            spm_vector=c[20] if len(c) > 20 else None, 
+            saliency_vector=c[21] if len(c) > 21 else None,
             category=v.get("category"), description=v.get("description"), entities=v.get("entities"),
-            llm_embedding=l4[i], dreamsim_vector=l3[i]
+            llm_embedding=l4[i] if (l4 and len(l4) > i) else None, 
+            dreamsim_vector=l3[i] if (l3 and len(l3) > i) else None
         )
         fill_color_spaces(meta, col)
         metadatas.append(meta)
     return metadatas
 
 def fill_color_spaces(meta, col):
-    """Dynamically fills color space features into metadata object"""
-    spaces = ["rgb", "hsv", "lab", "ycrcb", "hls", "xyz", "gray"]
-    feats = ["hist_std", "hist_interp", "hist_gauss", "cdf_std", "cdf_interp", "cdf_gauss"]
-    for s in spaces:
-        for attr in ["mean_vector", "std_vector", "skew_vector"]:
-            val = col.get(f"{s}_{attr.split('_')[0]}")
-            if val is not None:
-                setattr(meta, f"{s}_{attr}", val)
-        
-        for f in feats:
-            field = f"{s}_{f}"
-            if hasattr(meta, field):
-                val = col.get(field)
-                if val is not None:
-                    setattr(meta, field, val)
-        
-        if s != "gray":
-            for m in ["std", "interp", "gauss"]:
-                field = f"joint_{s}_{m}"
-                if hasattr(meta, field):
-                    val = col.get(field)
-                    if val is not None:
-                        setattr(meta, field, val)
-        
-        setattr(meta, f"cell_{s}_vector", col.get(f"cell_{s}_vector"))
+    """Fills consolidated meta-features into metadata object"""
+    meta_fields = [
+        "meta_hist_interp", "meta_cdf_interp", "meta_joint_interp", 
+        "meta_cell_vector", "meta_moments_mean", "meta_moments_std", "meta_moments_skew"
+    ]
+    for field in meta_fields:
+        val = col.get(field)
+        if val is not None:
+            setattr(meta, field, val)

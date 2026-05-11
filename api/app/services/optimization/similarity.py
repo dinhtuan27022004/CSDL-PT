@@ -5,6 +5,12 @@ class SimilarityCalculator:
     """Utility class for calculating similarity matrices using different metrics"""
     
     @staticmethod
+    def _raised_cosine_sim(x: np.ndarray) -> np.ndarray:
+        """Applies y = (1 + cos(pi * x)) / 2 to distance x, clamped to [0, 1]"""
+        x_clamped = np.clip(x, 0, 1)
+        return (1.0 + np.cos(np.pi * x_clamped)) / 2.0
+
+    @staticmethod
     def get_matrix(vectors: np.ndarray, metric: str = "cosine") -> np.ndarray:
         """Calculate N x N similarity matrix for a feature vector set"""
         n = vectors.shape[0]
@@ -15,8 +21,9 @@ class SimilarityCalculator:
         if metric == "cosine":
             norms = np.linalg.norm(vectors, axis=1, keepdims=True) + 1e-7
             norm_vecs = vectors / norms
-            sim = np.dot(norm_vecs, norm_vecs.T)
-            return np.maximum(0, sim).astype(np.float32)
+            cos_sim = np.dot(norm_vecs, norm_vecs.T)
+            # dist = 1 - sim
+            return SimilarityCalculator._raised_cosine_sim(1.0 - cos_sim).astype(np.float32)
         
         elif metric in ["l2_color", "l2_cell_color"]:
             if metric == "l2_color":
@@ -30,20 +37,19 @@ class SimilarityCalculator:
             dist_sq = sq_norms[:, np.newaxis] + sq_norms[np.newaxis, :] - 2 * dot_prod
             dist_sq = np.maximum(dist_sq, 0)
             l2 = np.sqrt(dist_sq)
-            return (1.0 - l2 / max_dist).astype(np.float32)
+            return SimilarityCalculator._raised_cosine_sim(l2 / max_dist).astype(np.float32)
 
         elif metric == "scalar":
             v = vectors.flatten()
-            diff = np.abs(v[:, np.newaxis] - v[np.newaxis, :])
-            return (1.0 - diff).astype(np.float32)
+            dist = np.abs(v[:, np.newaxis] - v[np.newaxis, :])
+            return SimilarityCalculator._raised_cosine_sim(dist).astype(np.float32)
         
         elif metric == "sharpness":
             v = vectors.flatten()
             a = v[:, np.newaxis]
             b = v[np.newaxis, :]
-            diff = np.abs(a - b)
-            denom = np.abs(a + b) + 1e-7
-            return (1.0 - diff / denom).astype(np.float32)
+            dist = np.abs(a - b) / (np.abs(a + b) + 1e-7)
+            return SimilarityCalculator._raised_cosine_sim(dist).astype(np.float32)
 
         return np.zeros((n, n), dtype=np.float32)
 
@@ -69,5 +75,8 @@ class SimilarityCalculator:
                         sim[i, j] = 0.0
                     else:
                         intersect = len(set1.intersection(set2))
-                        sim[i, j] = intersect / max(len(set1), len(set2))
+                        # For entities, similarity is Jaccard. 
+                        # We apply the kernel to (1 - sim)
+                        jaccard = intersect / max(len(set1), len(set2))
+                        sim[i, j] = SimilarityCalculator._raised_cosine_sim(1.0 - jaccard)
         return sim

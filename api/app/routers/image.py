@@ -156,17 +156,25 @@ async def search_similar_images(
 
 @router.post("/recompute-vlm")
 async def recompute_vlm_data(
-    force: bool = False,
+    background_tasks: BackgroundTasks,
+    force: bool = True,
     db: Session = Depends(get_db),
     service: ImageService = Depends(get_image_service)
 ):
-    """Trigger recomputation of missing or failed VLM data for uploaded images"""
+    """Trigger recomputation of missing or failed VLM data for uploaded images in background"""
+    # Temporarily hardcode force=True to bypass frontend parameter for testing
+    force = True 
+    background_tasks.add_task(_run_vlm_sync_in_background, service, force)
+    return {"message": "VLM Sync started in background. Please check terminal logs for progress."}
+
+async def _run_vlm_sync_in_background(service: ImageService, force: bool):
+    """Internal helper to manage DB session for VLM background tasks"""
+    from ..db.session import SessionLocal
+    db = SessionLocal()
     try:
-        result = await service.recompute_vlm_missing(db, force=force)
-        return result
-    except Exception as e:
-        logger.error(f"Recomputation route failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        await service.recompute_vlm_missing(db, force=force)
+    finally:
+        db.close()
 
 async def _run_recompute_in_background(service: ImageService):
     """Internal helper to manage DB session for background tasks"""

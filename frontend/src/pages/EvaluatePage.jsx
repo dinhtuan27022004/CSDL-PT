@@ -85,6 +85,50 @@ const PerformanceSection = ({ items = [], title, icon: Icon, thresholdLabel, typ
 };
 
 // ───────────────────────────────────────────────────────────────────────────
+// Ground Truth Stats Section
+// ───────────────────────────────────────────────────────────────────────────
+const GroundTruthStats = ({ stats }) => {
+    if (!stats || !stats.clusters) return null;
+
+    const data = [...stats.clusters].sort((a, b) => b.count - a.count);
+
+    return (
+        <div className="bg-slate-800/40 p-8 rounded-3xl border border-slate-700/50 shadow-xl">
+            <h3 className="text-sm font-black text-slate-400 uppercase tracking-[0.2em] mb-6 flex items-center gap-2">
+                <Layers className="w-4 h-4 text-emerald-400" />
+                Ground Truth Distribution
+            </h3>
+            <div className="w-full" style={{ height: `${Math.max(200, data.length * 30)}px` }}>
+                <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={data} layout="vertical" margin={{ left: 100, right: 40 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" horizontal={false} />
+                        <XAxis type="number" hide />
+                        <YAxis 
+                            dataKey="name" 
+                            type="category" 
+                            stroke="#94a3b8" 
+                            fontSize={10} 
+                            width={90}
+                            tickFormatter={(val) => val.length > 15 ? val.substring(0, 12) + '...' : val}
+                        />
+                        <Tooltip 
+                            contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '8px' }}
+                            cursor={{ fill: 'rgba(255,255,255,0.05)' }}
+                        />
+                        <Bar dataKey="count" fill="#10b981" radius={[0, 4, 4, 0]} barSize={20}>
+                            <LabelList dataKey="count" position="right" fill="#94a3b8" fontSize={10} offset={10} />
+                            {data.map((entry, index) => (
+                                <Cell key={`cell-${index}`} fillOpacity={1 - (index * 0.02)} />
+                            ))}
+                        </Bar>
+                    </BarChart>
+                </ResponsiveContainer>
+            </div>
+        </div>
+    );
+};
+
+// ───────────────────────────────────────────────────────────────────────────
 // Main EvaluatePage
 // ───────────────────────────────────────────────────────────────────────────
 const EvaluatePage = () => {
@@ -213,6 +257,8 @@ const EvaluatePage = () => {
                     </div>
                 </div>
 
+                <GroundTruthStats stats={data.gt_stats} />
+
                 {/* ── Query Performance Analysis ── */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                     <PerformanceSection 
@@ -305,6 +351,11 @@ const EvaluatePage = () => {
                             <div className="text-center px-4">
                                 <span className="text-primary-400 font-bold uppercase text-[9px] tracking-widest block mb-1">mAP@10</span>
                                 <span className="text-2xl font-black text-white">{((evaluationData.metrics?.test_map10_after || 0) * 100).toFixed(1)}%</span>
+                            </div>
+                            <div className="h-10 w-px bg-slate-700/50"></div>
+                            <div className="text-center px-4">
+                                <span className="text-emerald-400 font-bold uppercase text-[9px] tracking-widest block mb-1">GT Images</span>
+                                <span className="text-2xl font-black text-white">{evaluationData.gt_stats?.total_images || 0}</span>
                             </div>
                         </>
                     ) : (

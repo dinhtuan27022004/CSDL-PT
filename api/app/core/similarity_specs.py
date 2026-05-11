@@ -18,28 +18,16 @@ SCALAR_FEATURES = {
     "sharpness": "sharpness"
 }
 
-# Color Space Features (Histograms, CDFs, Joints, Cell Vectors)
-COLOR_SPACES = ["rgb", "hsv", "lab", "ycrcb", "hls", "xyz", "gray"]
-COLOR_METHODS = ["std", "interp", "gauss"]
-
-def get_color_feature_specs() -> Dict[str, str]:
-    specs = {}
-    for space in COLOR_SPACES:
-        # Hist & CDF
-        for method in COLOR_METHODS:
-            specs[f"{space}_hist_{method}"] = "cosine"
-            specs[f"{space}_cdf_{method}"] = "cosine"
-            if space != "gray":
-                specs[f"joint_{space}_{method}"] = "cosine"
-        
-        # Cell Vector
-        specs[f"cell_{space}"] = "l2_cell"
-        
-        # Color Moments
-        specs[f"{space}_mean"] = "cosine"
-        specs[f"{space}_std"] = "cosine"
-        specs[f"{space}_skew"] = "cosine"
-    return specs
+# Consolidated Color Meta-Features
+META_COLOR_FEATURES = {
+    "meta_hist_interp": "cosine",
+    "meta_cdf_interp": "cosine",
+    "meta_joint_interp": "cosine",
+    "meta_cell": "cosine",
+    "meta_moments_mean": "l2_cell",
+    "meta_moments_std": "l2_cell",
+    "meta_moments_skew": "l2_cell"
+}
 
 # Traditional & Deep Learning Vectors
 VECTOR_FEATURES = {
@@ -48,7 +36,7 @@ VECTOR_FEATURES = {
     "lbp": "cosine",
     "gabor": "cosine",
     "ccv": "cosine",
-    "zernike": "cosine",
+    "fourier": "cosine",
     "geo": "cosine",
     "tamura": "cosine",
     "edge_orientation": "cosine",
@@ -64,7 +52,6 @@ VECTOR_FEATURES = {
 
 # Special Discrete/Custom Features
 SPECIAL_FEATURES = {
-    "dominant_color": "l2_color",
     "category": "category",
     "entity": "entity"
 }
@@ -73,7 +60,7 @@ def get_all_feature_specs() -> Dict[str, str]:
     """Combines all feature definitions into one master dictionary"""
     all_specs = {}
     all_specs.update(SCALAR_FEATURES)
-    all_specs.update(get_color_feature_specs())
+    all_specs.update(META_COLOR_FEATURES)
     all_specs.update(VECTOR_FEATURES)
     all_specs.update(SPECIAL_FEATURES)
     return all_specs

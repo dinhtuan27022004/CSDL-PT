@@ -381,11 +381,8 @@ class DataService:
         with open(gt_path, "w") as f:
             json.dump(gt_dict, f, indent=2)
             
-        # Recompute stats for the updated GT
-        stats = self.get_stats_for_file(db, "ground_truth.json", force_recompute=True)
-        
         return {
-            "message": f"Successfully updated main Ground Truth from {len(gt_dict)} folders",
+            "message": f"Successfully updated main Ground Truth with {len(gt_dict)} clusters from folders",
             "path": str(gt_path),
-            **stats
+            "count": len(gt_dict)
         }

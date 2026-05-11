@@ -15,18 +15,22 @@ logger = get_logger(__name__)
 # Mapping from feature names to actual ImageMetadata column names if different
 COLUMN_MAP = {
     "hog": "hog_vector", "hu_moments": "hu_moments_vector", "lbp": "lbp_vector",
-    "color_moments": "color_moments_vector", "gabor": "gabor_vector", "ccv": "ccv_vector",
-    "zernike": "zernike_vector", "geo": "geo_vector", "tamura": "tamura_vector",
+    "gabor": "gabor_vector", "ccv": "ccv_vector", "fourier": "fourier_vector",
+    "geo": "geo_vector", "tamura": "tamura_vector",
     "edge_orientation": "edge_orientation_vector", "glcm": "glcm_vector", "wavelet": "wavelet_vector",
     "correlogram": "correlogram_vector", "ehd": "ehd_vector", "cld": "cld_vector",
     "spm": "spm_vector", "saliency": "saliency_vector", "semantic": "llm_embedding",
-    "dreamsim": "dreamsim_vector", "dominant_color": "dominant_color_vector",
-    "entity": "entities"
+    "entity": "entities",
+    
+    # --- Consolidated Meta Features ---
+    "meta_hist_interp": "meta_hist_interp",
+    "meta_cdf_interp": "meta_cdf_interp",
+    "meta_joint_interp": "meta_joint_interp",
+    "meta_cell": "meta_cell_vector",
+    "meta_moments_mean": "meta_moments_mean",
+    "meta_moments_std": "meta_moments_std",
+    "meta_moments_skew": "meta_moments_skew"
 }
-
-# Add cell vector mapping
-for space in ["rgb", "hsv", "lab", "ycrcb", "hls", "xyz", "gray"]:
-    COLUMN_MAP[f"cell_{space}"] = f"cell_{space}_vector"
 
 class ImageRepository:
     """Repository for image metadata database operations"""
@@ -96,8 +100,11 @@ class ImageRepository:
         specs = get_all_feature_specs()
         sim_map = {}
 
-        def safe_sim(expr):
-            return func.coalesce(func.least(1.0, func.greatest(0.0, expr)), 0.0)
+        def raised_cosine_sim(dist_expr):
+            """Applies y = (1 + cos(pi * x)) / 2 to distance x"""
+            # Ensure x is clamped between 0 and 1 before applying cosine
+            clamped_x = func.least(1.0, func.greatest(0.0, dist_expr))
+            return (1.0 + func.cos(literal(math.pi) * clamped_x)) / 2.0
 
         for name, metric in specs.items():
             col_name = COLUMN_MAP.get(name, name)
@@ -105,25 +112,31 @@ class ImageRepository:
             query_val = getattr(query_metadata, col_name)
 
             if metric == "scalar":
-                sim_map[name] = safe_sim(1.0 - func.greatest(0.0, func.abs(col - query_val)))
+                dist = func.abs(col - query_val)
+                sim_map[name] = raised_cosine_sim(dist)
             
             elif metric == "sharpness":
                 diff = func.abs(col - query_val)
                 denom = func.abs(col + query_val) + 1e-7
-                sim_map[name] = safe_sim(1.0 - func.greatest(0.0, diff / denom))
+                dist = diff / denom
+                sim_map[name] = raised_cosine_sim(dist)
             
             elif metric == "cosine":
-                # For vectors, we use cosine distance from PGVector
-                sim_map[name] = safe_sim(1.0 - func.greatest(0.0, func.coalesce(col.cosine_distance(query_val), 1.0)))
+                # For PGVector, cosine_distance is already in [0, 2], but usually [0, 1] for unit vectors
+                # We normalize it to [0, 1] for the formula
+                dist = func.coalesce(col.cosine_distance(query_val), 1.0)
+                sim_map[name] = raised_cosine_sim(dist)
             
             elif metric == "l2_color":
                 max_d = math.sqrt(255*255*3)
-                sim_map[name] = safe_sim(1.0 - col.l2_distance(query_val) / max_d)
+                dist = col.l2_distance(query_val) / max_d
+                sim_map[name] = raised_cosine_sim(dist)
             
             elif metric == "l2_cell":
                 space = name.split("_")[1] if "_" in name else "rgb"
                 max_d = math.sqrt(255*255*3*16) if space != "gray" else math.sqrt(255*255*16)
-                sim_map[name] = safe_sim(1.0 - func.greatest(0.0, func.coalesce(col.l2_distance(query_val), 0.0)) / max_d)
+                dist = func.coalesce(col.l2_distance(query_val), 0.0) / max_d
+                sim_map[name] = raised_cosine_sim(dist)
             
             elif metric == "category":
                 q_cat = (query_val or "General").lower()
@@ -134,7 +147,10 @@ class ImageRepository:
                 if query_ents:
                     intersection = sum([case((col.cast(Text).ilike(f'%"{e}"%'), 1.0), else_=0.0) for e in query_ents])
                     union = len(query_ents) + func.jsonb_array_length(col) - intersection
-                    sim_map[name] = safe_sim(intersection / func.greatest(1.0, union))
+                    # For Jaccard, similarity is already [0, 1]. 
+                    # We can treat (1 - similarity) as distance and apply the kernel
+                    jaccard_sim = intersection / func.greatest(1.0, union)
+                    sim_map[name] = raised_cosine_sim(1.0 - jaccard_sim)
                 else:
                     sim_map[name] = literal(0.0)
 

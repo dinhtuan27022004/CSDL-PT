@@ -507,6 +507,14 @@ const useImageStore = create((set, get) => ({
             const response = await fetch(`${API_BASE_URL}/api/optimization/evaluation`);
             if (!response.ok) throw new Error(`Failed to fetch evaluation results`);
             const data = await response.json();
+            
+            // Optimization: Only update state if timestamp has changed
+            const currentData = get().evaluationData;
+            if (currentData && data.timestamp === currentData.timestamp) {
+                if (!silent) set({ evaluationLoading: false });
+                return;
+            }
+
             set({ evaluationData: data, evaluationLoading: false });
         } catch (error) {
             set({ evaluationError: error.message, evaluationLoading: false });
